@@ -14,8 +14,13 @@ import { initializeApp } from 'firebase-admin/app';
 
 dotenv.config();
 
-// Instanciação do SDK oficial do Google Gen AI
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Diagnóstico temporário para conferir no log do Render
+console.log("🔑 GEMINI_API_KEY:", process.env.GEMINI_API_KEY ? `...${process.env.GEMINI_API_KEY.slice(-4)}` : "NÃO DEFINIDA");
+console.log("🔑 GOOGLE_API_KEY:", process.env.GOOGLE_API_KEY ? `...${process.env.GOOGLE_API_KEY.slice(-4)}` : "NÃO DEFINIDA");
+
+// Instanciação do SDK oficial do Google Gen AI (com garantia de fallback)
+const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+const ai = new GoogleGenAI({ apiKey });
 
 // Modelo padrão respeitando a variável de ambiente process.env.GEMINI_MODEL
 const envModel = process.env.GEMINI_MODEL;
