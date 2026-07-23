@@ -25,9 +25,7 @@ const DEFAULT_MODEL = envModel || 'gemini-2.0-flash';
 const CANDIDATE_MODELS = [
   DEFAULT_MODEL,
   'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-pro'
+  'gemini-2.0-flash-lite'
 ].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
 
 const verifyFirebaseToken = async (req: any, res: any, next: any) => {
