@@ -1,0 +1,210 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "authorized": { "type": "boolean" },
+        "title": { "type": "string" },
+        "earnedTitles": { "type": "array", "items": { "type": "string" } },
+        "folderColors": {
+          "type": "object",
+          "description": "Custom colors for quiz folders (tags)."
+        }
+      }
+    },
+    "ErrorReport": {
+      "title": "ErrorReport",
+      "description": "A report of an error or bug sent by a user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "message": { "type": "string" },
+        "page": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["pending", "resolved"] }
+      },
+      "required": ["userId", "message", "createdAt"]
+    },
+    "TitleDefinition": {
+      "title": "TitleDefinition",
+      "description": "A title that can be earned by users based on their performance.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "requirement": { "type": "integer" },
+        "criteria": { 
+          "type": "string", 
+          "enum": ["total_questions", "daily_questions", "weekly_questions", "flashcards_reviewed", "streak_days", "daily_goals_met", "weekly_goals_met"]
+        },
+        "icon": { "type": "string" },
+        "color": { "type": "string" }
+      },
+      "required": ["name", "requirement", "criteria"]
+    },
+    "Flashcard": {
+      "title": "Flashcard",
+      "description": "A flashcard created from a missed question.",
+      "type": "object",
+      "properties": {
+        "question": { "type": "string" },
+        "answer": { "type": "string" },
+        "explanation": { "type": "string" },
+        "nextReview": { "type": "string", "format": "date-time" },
+        "interval": { "type": "integer" },
+        "easeFactor": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["question", "answer", "userId"]
+    },
+    "AnkiMedia": {
+      "title": "AnkiMedia",
+      "description": "Media file uploaded as part of Anki imports.",
+      "type": "object",
+      "properties": {
+        "data": { "type": "string" },
+        "mime": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["data", "mime", "userId"]
+    },
+    "Quiz": {
+      "title": "Quiz",
+      "description": "A set of questions extracted from a PDF.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" },
+              "options": { "type": "array", "items": { "type": "string" } },
+              "correctAnswer": { "type": "string" },
+              "explanation": { "type": "string" }
+            }
+          }
+        },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isPublic": { "type": "boolean" },
+        "tag": { "type": "string" }
+      }
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "A comment on a public quiz question.",
+      "type": "object",
+      "properties": {
+        "quizId": { "type": "string" },
+        "questionId": { "type": "string" },
+        "quizTitle": { "type": "string" },
+        "text": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userPhoto": { "type": "string" },
+        "userTitle": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "A notification for a user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string" },
+        "quiz": { "type": "object" },
+        "message": { "type": "string" },
+        "time": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "BankQuestion": {
+      "title": "BankQuestion",
+      "description": "A question stored in the shared Question Bank.",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["multiple_choice", "discursive"] },
+        "text": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "correctAnswer": { "type": "string" },
+        "explanation": { "type": "string" },
+        "mainTag": { "type": "string" },
+        "subtag": { "type": "string" },
+        "institution": { "type": "string" },
+        "year": { "type": "string" },
+        "images": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["type", "text", "correctAnswer", "mainTag", "createdAt", "createdBy"]
+    },
+    "BankTag": {
+      "title": "BankTag",
+      "description": "A dynamic tag representing a medical area and its subspecialties.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "subtags": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["name", "subtags"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile with document-specific settings."
+    },
+    "/users/{userId}/flashcards/{flashcardId}": {
+      "schema": "Flashcard",
+      "description": "User flashcards."
+    },
+    "/users/{userId}/ankiMedia/{mediaId}": {
+      "schema": "AnkiMedia",
+      "description": "User's imported Anki media files."
+    },
+    "/users/{userId}/stats/{statId}": {
+      "schema": "object",
+      "description": "User performance statistics."
+    },
+    "/quizzes/{quizId}": {
+      "schema": "Quiz",
+      "description": "Quizzes extracted from PDFs."
+    },
+    "/comments/{commentId}": {
+      "schema": "Comment",
+      "description": "Social comments on questions."
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "User notifications."
+    },
+    "/error_reports/{reportId}": {
+      "schema": "ErrorReport",
+      "description": "User error reports."
+    },
+    "/titles/{titleId}": {
+      "schema": "TitleDefinition",
+      "description": "Configurable user titles."
+    },
+    "/questionBank/{questionId}": {
+      "schema": "BankQuestion",
+      "description": "Global bank questions."
+    },
+    "/bankTags/{tagId}": {
+      "schema": "BankTag",
+      "description": "Global question bank tags and subtags."
+    }
+  }
+}

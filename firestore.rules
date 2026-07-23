@@ -1,0 +1,153 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && 'email' in request.auth.token && request.auth.token.email == 'rmourari@ufpi.edu.br';
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAuthorized() {
+      return isAdmin() || (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.authorized == true);
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation helpers
+    function isValidFlashcard(data) {
+      return data.keys().hasAll(['question', 'answer', 'userId', 'createdAt', 'nextReview', 'interval', 'easeFactor']) &&
+             data.question is string && data.question.size() <= 1000000 &&
+             data.answer is string && data.answer.size() <= 1000000 &&
+             data.userId == request.auth.uid &&
+             data.nextReview is string &&
+             data.interval is int &&
+             data.easeFactor is number &&
+             (!data.keys().contains('tag') || data.tag is string && data.tag.size() <= 100);
+    }
+
+    function isValidQuiz(data) {
+      return data.keys().hasAll(['title', 'questions', 'userId', 'createdAt']) &&
+             data.title is string && data.title.size() <= 500 &&
+             data.userId == request.auth.uid &&
+             data.questions is list && data.questions.size() <= 300 &&
+             (!data.keys().contains('isPublic') || data.isPublic is bool) &&
+             (!data.keys().contains('tag') || data.tag is string && data.tag.size() <= 100);
+    }
+
+    function isValidComment(data) {
+      return data.keys().hasAll(['quizId', 'questionId', 'quizTitle', 'text', 'userId', 'userName', 'createdAt']) &&
+             data.quizId is string && data.quizId.size() <= 128 &&
+             data.questionId is string && data.questionId.size() <= 128 &&
+             data.quizTitle is string && data.quizTitle.size() <= 500 &&
+             data.text is string && data.text.size() <= 1000 &&
+             data.userId == request.auth.uid &&
+             data.userName is string && data.userName.size() <= 100 &&
+             data.createdAt is string;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'type', 'message', 'time', 'read', 'createdAt']) &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.type is string && data.type.size() <= 50 &&
+             data.message is string && data.message.size() <= 500 &&
+             data.read is bool &&
+             data.createdAt is string;
+    }
+
+    // 2. User Settings & Profiles
+    match /users/{userId} {
+      allow read: if isSignedIn() && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isOwner(userId);
+      allow update: if (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['folderColors'])) || isAdmin();
+      allow delete: if isAdmin();
+      
+      // Flashcards: User-specific subcollection
+      match /flashcards/{flashcardId} {
+        allow read, delete: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidFlashcard(incoming());
+        allow update: if (isOwner(userId) && isValidFlashcard(incoming()) &&
+                        incoming().userId == existing().userId) || isAdmin();
+      }
+
+      match /stats/{statId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isOwner(userId) || isAdmin();
+      }
+
+      // Anki Media: User-specific subcollection
+      match /ankiMedia/{mediaId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // 3. Quizzes
+    match /quizzes/{quizId} {
+      allow get: if isAuthorized() && (resource.data.userId == request.auth.uid || resource.data.isPublic == true || isAdmin());
+      allow list: if isAuthorized() && (resource.data.userId == request.auth.uid || resource.data.isPublic == true || isAdmin());
+      allow create: if (isAuthorized() && isValidQuiz(incoming())) || isAdmin();
+      allow delete: if (isAuthorized() && resource.data.userId == request.auth.uid) || isAdmin();
+      allow update: if (isAuthorized() && resource.data.userId == request.auth.uid && isValidQuiz(incoming())) || isAdmin();
+    }
+
+    // 4. Comments
+    match /comments/{commentId} {
+      allow read: if isAuthorized();
+      allow create: if isAuthorized() && isValidComment(incoming());
+      allow delete: if (isAuthorized() && existing().userId == request.auth.uid) || isAdmin();
+    }
+
+    // 5. Notifications
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthorized(); 
+      allow update: if (isOwner(existing().userId) && incoming().diff(existing()).affectedKeys().hasOnly(['read'])) || isAdmin();
+      allow delete: if isOwner(existing().userId) || isAdmin();
+    }
+
+    // 6. Error Reports
+    match /error_reports/{reportId} {
+      allow read, update, delete: if isAdmin();
+      allow create: if isSignedIn();
+    }
+
+    // 7. Configurable Titles
+    match /titles/{titleId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    // 8. Question Bank
+    match /questionBank/{questionId} {
+      allow read: if isAuthorized();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // 9. Question Bank Tags
+    match /bankTags/{tagId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}

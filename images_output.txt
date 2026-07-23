@@ -1,0 +1,1 @@
+FirebaseError: [code=permission-denied]: Missing or insufficient permissions.

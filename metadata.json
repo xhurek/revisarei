@@ -1,0 +1,6 @@
+{
+  "name": "Revisarei",
+  "description": "Transforme seus PDFs em questionários interativos e flashcards com repetição espaçada (SRS).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
