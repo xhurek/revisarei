@@ -14,24 +14,32 @@ import { initializeApp } from 'firebase-admin/app';
 
 dotenv.config();
 
-// Diagnóstico temporário para conferir no log do Render
-console.log("🔑 GEMINI_API_KEY:", process.env.GEMINI_API_KEY ? `...${process.env.GEMINI_API_KEY.slice(-4)}` : "NÃO DEFINIDA");
-console.log("🔑 GOOGLE_API_KEY:", process.env.GOOGLE_API_KEY ? `...${process.env.GOOGLE_API_KEY.slice(-4)}` : "NÃO DEFINIDA");
+// Instanciação do SDK oficial do Google Gen AI
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    }
+  }
+});
 
-// Instanciação do SDK oficial do Google Gen AI (com garantia de fallback)
-const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-const ai = new GoogleGenAI({ apiKey });
+// Modelo padrão respeitando a variável de ambiente process.env.GEMINI_MODEL, ignorando modelos descontinuados
+const isDeprecatedModel = (m?: string) => {
+  if (!m) return true;
+  return m.includes('1.5') || m.includes('2.0') || m.includes('2.5');
+};
 
-// Modelo padrão respeitando a variável de ambiente process.env.GEMINI_MODEL
 const envModel = process.env.GEMINI_MODEL;
-const DEFAULT_MODEL = envModel || 'gemini-2.0-flash';
+const DEFAULT_MODEL = (envModel && !isDeprecatedModel(envModel)) ? envModel : 'gemini-3.6-flash';
 
 // Lista de modelos oficiais e ativos da família Gemini para fallback
 const CANDIDATE_MODELS = [
   DEFAULT_MODEL,
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite'
-].filter((m, idx, arr) => m && arr.indexOf(m) === idx);
+  'gemini-3.6-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-flash-latest'
+].filter((m, idx, arr) => m && !isDeprecatedModel(m) && arr.indexOf(m) === idx);
 
 const verifyFirebaseToken = async (req: any, res: any, next: any) => {
   const authHeader = req.headers.authorization;
@@ -62,7 +70,7 @@ const getModelForUser = (user: any) => {
 };
 
 // Retry e Fallback automático entre modelos oficiais ativos da família Gemini
-async function withRetry<T>(fnBuilder: (model: string) => Promise<T>, maxRetries = 2, delay = 2000): Promise<T> {
+async function withRetry<T>(fnBuilder: (model: string) => Promise<T>, maxRetries = 2, delay = 1500): Promise<T> {
   let lastError: any;
   for (const model of CANDIDATE_MODELS) {
     for (let i = 0; i < maxRetries; i++) {
@@ -73,22 +81,23 @@ async function withRetry<T>(fnBuilder: (model: string) => Promise<T>, maxRetries
         const errorMsg = (error.toString() || '') + ' ' + (error.message || '');
         console.warn(`Gemini model ${model} (attempt ${i + 1}/${maxRetries}) error: ${errorMsg.substring(0, 150)}`);
         
-        const isNotFound = 
+        const isPermanentError = 
           errorMsg.includes('404') || 
           errorMsg.includes('NOT_FOUND') ||
           errorMsg.includes('not found') ||
+          errorMsg.includes('no longer available') ||
+          errorMsg.includes('is not available') ||
           error.status === 404;
 
-        if (isNotFound) {
-          console.warn(`Model ${model} returned 404 Not Found. Trying next candidate model immediately...`);
-          break; // Pula para o próximo modelo candidato imediatamente sem retentar o 404
+        if (isPermanentError) {
+          console.warn(`Model ${model} returned permanent error (${errorMsg.substring(0, 100)}). Trying next candidate model immediately...`);
+          break; // Pula para o próximo modelo candidato imediatamente sem retentar o erro permanente
         }
 
         const isTransient = 
           errorMsg.includes('429') || 
           errorMsg.includes('503') || 
           errorMsg.includes('RESOURCE_EXHAUSTED') ||
-          errorMsg.includes('no longer available') ||
           errorMsg.includes('exceeded your current quota') ||
           errorMsg.includes('high demand') ||
           error.status === 429 ||
@@ -97,7 +106,7 @@ async function withRetry<T>(fnBuilder: (model: string) => Promise<T>, maxRetries
         if (isTransient) {
           if (i < maxRetries - 1) {
             await new Promise(resolve => setTimeout(resolve, delay));
-            delay = Math.min(delay * 1.5, 4000);
+            delay = Math.min(delay * 1.5, 3000);
             continue;
           } else {
             console.warn(`Model ${model} exhausted retries. Trying next candidate model...`);
@@ -228,12 +237,14 @@ async function startServer() {
         --------------------------------------
         
         Regras de extração:
-        1. Classifique o 'type' da questão como "multiple_choice" ou "discursive".
-        2. Se for "multiple_choice", preencha o campo 'options'. NUNCA inclua as letras (A, B, C...) no texto das opções ou da resposta.
-        3. Se for "discursive", preencha 'correctAnswer'.
-        4. O 'correctAnswer' deve OBRIGATORIAMENTE ser deduzido do gabarito fornecido. Não tente "adivinhar" a resposta por conta própria se não houver no gabarito, deixe em branco.
-        5. Defina 'mainTag' como uma das 6 Grandes Áreas da Medicina ("Clínica Médica", "Cirurgia Geral", "Pediatria", "Ginecologia", "Obstetrícia", "Medicina de Família e Comunidade", ou "Outros"). NUNCA tente extrair ou identificar as 'subtags', retorne sempre o campo 'subtags' como um array vazio [].
-        6. Caso o enunciado original faça referência a uma imagem, gráfico ou figura necessária para responder, defina 'hasImageWarning' como true.
+        1. Identifique a numeração original da questão (ex: "1", "12", "105") se presente no texto e salve no campo 'questionNumber'.
+        2. Classifique o 'type' da questão como "multiple_choice" ou "discursive".
+        3. Se for "multiple_choice", preencha o campo 'options'. NUNCA inclua as letras (A, B, C...) no texto das opções ou da resposta.
+        4. Se for "discursive", preencha 'correctAnswer'.
+        5. O 'correctAnswer' deve OBRIGATORIAMENTE ser deduzido do gabarito fornecido. Não tente "adivinhar" a resposta por conta própria se não houver no gabarito, deixe em branco.
+        6. Defina 'mainTag' como uma das 6 Grandes Áreas da Medicina ("Clínica Médica", "Cirurgia Geral", "Pediatria", "Ginecologia", "Obstetrícia", "Medicina de Família e Comunidade", ou "Outros"). NUNCA tente extrair ou identificar as 'subtags', retorne sempre o campo 'subtags' como um array vazio [].
+        7. DETECÇÃO DE IMAGENS: Caso o enunciado faça referência a uma imagem, figura, radiografia, foto, ECG, gráfico ou esquema explicativo necessário para responder, defina 'hasImageWarning' como true.
+        8. ATENÇÃO: Tabela ou lista de gabarito no final do texto NÃO É IMAGEM DE QUESTÃO! NUNCA marque 'hasImageWarning' como true para tabelas de gabarito.
         ${predefinedTags?.usePredefined ? `AVISO: O usuário já definiu as tags. Use mainTag="${predefinedTags.mainTag}" e subtags=["${predefinedTags.subtag || ''}"] para todas as questões.` : ''}
         
         Retorne o resultado estritamente em conformidade com o formato JSON.
@@ -270,6 +281,7 @@ async function startServer() {
                 items: {
                   type: Type.OBJECT,
                   properties: {
+                    questionNumber: { type: Type.STRING },
                     type: { type: Type.STRING, enum: ["multiple_choice", "discursive"] },
                     text: { type: Type.STRING },
                     options: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -361,10 +373,17 @@ async function startServer() {
 
       const prompt = `
         Transcreva fielmente as questões de número ${startIdx} até ${endIdx} deste documento.
-        Não tente responder as questões. Retorne apenas o enunciado e as alternativas exatamente como estão no PDF.
+        Não tente responder as questões. Retorne apenas o número da questão ('numero'), o enunciado e as alternativas exatamente como estão no PDF.
         Identifique também o ano (ano) e a banca/instituição (banca) da questão, se aparecerem antes do enunciado.
         NÃO tente identificar a área médica ou tópicos, retorne-os sempre vazios.
-        Caso a questão possua uma imagem ou gráfico explicativo (QUE NÃO SEJA A TABELA DE GABARITO), inclua no campo 'descricao_da_imagem' uma descrição detalhada. Se for apenas a tabela de gabarito no final, IGNORE-A e não a descreva.
+        
+        RECONHECIMENTO DE IMAGENS:
+        Caso a questão contiver ou fizer referência a uma imagem, figura, radiografia, tomografia, ultrassom, gráfico, ECG, ecocardiograma ou esquema explicativo, defina 'has_image' como true.
+        
+        ATENÇÃO ESPECIAL À ÚLTIMA PÁGINA OU SEÇÃO DE GABARITO:
+        No final de provas ou simulados, existe uma tabela ou lista com o GABARITO oficial das respostas.
+        A TABELA DE GABARITO NÃO É UMA IMAGEM DE QUESTÃO!
+        Se você identificar a tabela/lista de gabarito no final, desconsidere-a completamente. NUNCA a considere como imagem de questão nem crie uma questão para o gabarito.
       `;
 
       const model = getModelForUser(req.user);
@@ -394,6 +413,7 @@ async function startServer() {
                     ano: { type: Type.STRING },
                     area_medica: { type: Type.STRING },
                     topicos: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    has_image: { type: Type.BOOLEAN },
                     descricao_da_imagem: { type: Type.STRING }
                   },
                   required: ["numero", "enunciado", "alternativas"]
@@ -647,6 +667,77 @@ async function startServer() {
     }
   });
 
+  // Analisar Assunto Principal e Subtema das questões erradas
+  app.post("/api/analyze-missed-topics", verifyFirebaseToken, async (req: any, res: any) => {
+    try {
+      const { items } = req.body;
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.json({ analysis: [] });
+      }
+
+      const prompt = `
+        Para cada uma das questões de medicina erradas e suas respostas corretas abaixo, identifique o Assunto Principal (tema/doença) e o Subtema (conduta, tratamento, diagnóstico, complicação específica).
+
+        Exemplo 1:
+        Questão: "No tratamento da Doença do Refluxo Gastroesofágico (DRGE), são condutas adequadas, EXCETO:"
+        Resposta: "Nos períodos de sono, posição prona, com elevação da cabeceira entre 30 a 40 graus."
+        -> Assunto Principal: "DRGE"
+        -> Subtema: "Tratamento"
+
+        Exemplo 2:
+        Questão: "Criança de 3 anos, portadora de anemia falciforme, apresenta palidez súbita, hipoatividade e dor abdominal. Ao exame, apresenta baço a 7 cm da reborda costal esquerda (previamente impalpável). Qual o diagnóstico mais provável?"
+        Resposta: "Crise de sequestro esplênico."
+        -> Assunto Principal: "Anemia falciforme"
+        -> Subtema: "Sequestro esplênico"
+
+        Lista de questões a analisar:
+        ${JSON.stringify(items.map((it: any, i: number) => ({ id: i, question: it.question, answer: it.answer })))}
+
+        Retorne um JSON estritamente no seguinte formato:
+        {
+          "analysis": [
+            {
+              "id": 0,
+              "topic": "Assunto Principal curto e limpo (ex: DRGE, Anemia falciforme, Asma, HAS)",
+              "subtopic": "Subtema curto e limpo (ex: Tratamento, Sequestro esplênico, Quadro clínico, Complicações)"
+            }
+          ]
+        }
+      `;
+
+      const response = await withRetry((selectedModel) => ai.models.generateContent({
+        model: selectedModel,
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              analysis: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    id: { type: Type.NUMBER },
+                    topic: { type: Type.STRING },
+                    subtopic: { type: Type.STRING }
+                  },
+                  required: ["id", "topic", "subtopic"]
+                }
+              }
+            },
+            required: ["analysis"]
+          }
+        }
+      }));
+
+      res.json(JSON.parse(response.text || '{"analysis": []}'));
+    } catch (error: any) {
+      console.error("Error analyzing missed topics:", error);
+      res.json({ analysis: [] });
+    }
+  });
+
   // Gerar Flashcard
   app.post("/api/generate-flashcard", verifyFirebaseToken, async (req: any, res: any) => {
     try {
@@ -791,6 +882,11 @@ async function startServer() {
   app.use('/api', (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error('API Error:', err);
     res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+  });
+
+  // Catch-all 404 para rotas /api não encontradas (evita retornar o HTML index.html da SPA)
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `Rota de API não encontrada: ${req.method} ${req.path}` });
   });
 
   if (process.env.NODE_ENV !== "production") {

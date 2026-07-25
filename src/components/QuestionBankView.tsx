@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { collection, getDocs, addDoc, doc, deleteDoc, updateDoc, query, orderBy, limit, onSnapshot, getDoc } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType, apiFetch } from '../lib/firebase';
+import { db, auth, handleFirestoreError, OperationType, apiFetch, parseJsonResponse } from '../lib/firebase';
 import { BankQuestion } from '../types';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Plus, Save, Trash2, X, Edit2, Check, UploadCloud, Eye, Image as ImageIcon, Brain, Tag, AlertTriangle, BookOpen } from 'lucide-react';
@@ -95,7 +95,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
 
   const fetchQuestions = async () => {
     try {
-      const q = query(collection(db, 'questionBank'), orderBy('createdAt', 'desc'), limit(100));
+      const q = query(collection(db, 'questionBank'), orderBy('createdAt', 'desc'));
       const snap = await getDocs(q);
       const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankQuestion));
       setQuestions(list);
@@ -124,7 +124,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8 w-full max-w-4xl mx-auto">
       
       
             {isCreateQuizModalOpen && (
@@ -432,8 +432,11 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
         <>
           <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
             <div>
-              <h1 className="text-3xl font-black text-slate-900 tracking-tight">Banco de Questões</h1>
-              <p className="text-slate-500 font-medium">Explore e gerencie questões categorizadas.</p>
+              <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">EXPLORE E RESPONDA</h2>
+              <div className="flex items-center gap-3 mt-1">
+                <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4">Banco de Questões</h1>
+                <span className="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black">{questions.length} Questões</span>
+              </div>
             </div>
             
             {isAdmin && (
@@ -659,6 +662,8 @@ function parseQuestionsFromText(
   const questionRegex = /^\s*(?:Quest[ãa]o\s+)?(\d+)\s*[\.\-\)\:]/i;
   // Matches letters like "a)", "b)", "C -", "d." at start of option
   const optionRegex = /^\s*([a-eA-E])\s*[\)\.\-\s]\s*(.*)/;
+  const imageKeywords = /\b(imagem|figura|gr[áa]fico|radiografia|ecocardiograma|ecg|esquema|foto)\b/i;
+  const gabaritoKeywords = /\b(gabarito|tabela de gabarito|respostas do simulado)\b/i;
 
   for (let line of lines) {
     const trimmed = line.trim();
@@ -671,9 +676,12 @@ function parseQuestionsFromText(
         currentQuestion.options = currentOptions;
         parsedQuestions.push(currentQuestion as BankQuestion);
       }
+      const qNum = qMatch[1];
+      const restText = line.replace(questionRegex, '').trim();
       currentQuestion = {
         id: 'docx_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-        text: line.replace(questionRegex, '').trim(),
+        questionNumber: qNum,
+        text: restText,
         type: 'multiple_choice',
         correctAnswer: '',
         mainTag: currentMainTag || 'Clínica Médica',
@@ -681,6 +689,7 @@ function parseQuestionsFromText(
         subtags: currentSubtag ? currentSubtag.split(',').map(s=>s.trim()).filter(Boolean) : [],
         institution: currentInstitution || '',
         year: currentYear || '',
+        hasImageWarning: imageKeywords.test(restText) && !gabaritoKeywords.test(restText),
         createdAt: new Date().toISOString(),
         createdBy: auth.currentUser?.uid || 'unknown'
       };
@@ -699,6 +708,9 @@ function parseQuestionsFromText(
 
     // Append to question text or append to last option if it's multiline
     if (currentQuestion) {
+      if (imageKeywords.test(trimmed) && !gabaritoKeywords.test(trimmed)) {
+        currentQuestion.hasImageWarning = true;
+      }
       if (currentOptions.length > 0) {
         currentOptions[currentOptions.length - 1] += ' ' + trimmed;
       } else {
@@ -713,9 +725,19 @@ function parseQuestionsFromText(
     parsedQuestions.push(currentQuestion as BankQuestion);
   }
 
+  // Filter out any item that is actually the gabarito at the end
+  const filtered = parsedQuestions.filter(q => {
+    const textLower = (q.text || '').toLowerCase();
+    const numLower = String(q.questionNumber || '').toLowerCase();
+    if (numLower.includes('gabarito')) return false;
+    if (textLower.includes('tabela de gabarito') || textLower.includes('gabarito oficial')) return false;
+    if (/^(?:\s*\d+[\.\-\s]+[A-E]\s*){3,}$/i.test(q.text.trim())) return false;
+    return true;
+  });
+
   // Fallback if no structured questions found: insert entire text as one discursive question
-  if (parsedQuestions.length === 0 && rawText.trim().length > 10) {
-    parsedQuestions.push({
+  if (filtered.length === 0 && rawText.trim().length > 10) {
+    filtered.push({
       id: 'docx_fallback_' + Date.now(),
       text: rawText.trim(),
       type: 'discursive',
@@ -729,23 +751,27 @@ function parseQuestionsFromText(
     });
   }
 
-  return parsedQuestions;
+  return filtered;
 }
 
 function normalizeText(text: string): string {
   return text.toLowerCase().replace(/[\s\r\n\t]+/g, ' ').trim();
 }
 
-function AddQuestionsView({ 
+export function AddQuestionsView({ 
   onCancel, 
   onAdded, 
   availableTags,
-  existingQuestions
+  existingQuestions,
+  onSaveToDatabase,
+  submitLabel = 'Salvar no Banco'
 }: { 
   onCancel: () => void, 
   onAdded: () => void, 
   availableTags: { id: string, name: string, subtags: string[] }[],
-  existingQuestions: BankQuestion[]
+  existingQuestions: BankQuestion[],
+  onSaveToDatabase?: (staging: BankQuestion[]) => Promise<void>,
+  submitLabel?: string
 }) {
   const [text, setText] = useState('');
   const [answerKeyText, setAnswerKeyText] = useState('');
@@ -780,8 +806,11 @@ function AddQuestionsView({
     return { isDup: false, type: null };
   };
 
+  const missingImageQuestions = staging.filter(q => q.hasImageWarning && !q.ignoreImageWarning && (!q.images || q.images.length === 0));
+  const missingImageNumbers = Array.from(new Set(missingImageQuestions.map(q => q.questionNumber).filter(Boolean)));
+
   const hasAnyDuplicate = staging.some(q => checkDuplicate(q).isDup);
-  const hasAnyMissingImage = staging.some(q => q.hasImageWarning && (!q.images || q.images.length === 0));
+  const hasAnyMissingImage = missingImageQuestions.length > 0;
 
   // Initialize mainTag with first available tag if exists
   useEffect(() => {
@@ -864,9 +893,9 @@ function AddQuestionsView({
     if (!text.trim()) return alert('Insira o texto das questões.');
     setProcessing(true);
     try {
-      let res;
+      let data;
       try {
-        res = await apiFetch('/api/extract-bank-questions', {
+        const res = await apiFetch('/api/extract-bank-questions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -878,16 +907,11 @@ function AddQuestionsView({
             predefinedTags: usePredefinedTags ? { usePredefined: true, mainTag, subtag } : { usePredefined: false }
           })
         });
+        data = await parseJsonResponse(res);
       } catch (err: any) {
-        throw new Error(`Erro de rede ou timeout ao processar a questão. A extração pode ter demorado muito. Tente enviar textos ou imagens menores. (Erro: ${err.message})`);
+        throw new Error(`Processamento falhou: ${err.message}`);
       }
       
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Erro do servidor: ${res.status} ${errText.substring(0, 100)}`);
-      }
-      
-      const data = await res.json();
       if (data.error) throw new Error(data.error);
       if (data.questions) {
         setStaging(prev => [...prev, ...data.questions]);
@@ -905,25 +929,35 @@ function AddQuestionsView({
   const saveToBank = async () => {
     if (staging.length === 0) return;
     if (hasAnyDuplicate) {
-      alert('Por favor, remova as questões duplicadas (em vermelho) antes de salvar no banco de questões.');
+      alert('Por favor, remova as questões duplicadas (em vermelho) antes de salvar.');
       return;
     }
     if (hasAnyMissingImage) {
-      alert('Por favor, anexe as imagens pendentes nas questões marcadas em vermelho, ou remova as questões, antes de salvar.');
+      const numsStr = missingImageNumbers.length > 0 ? ` (#${missingImageNumbers.join(', #')})` : '';
+      alert(`Atenção: A(s) questão(ões)${numsStr} possui(em) aviso de imagem pendente. Por favor, anexe a imagem correspondente em cada questão destacada em vermelho (ou remova a questão) antes de salvar.`);
       return;
     }
     setSaving(true);
     try {
-      for (const q of staging) {
-        const docData = { ...q };
-        delete docData.id;
-        docData.createdAt = new Date().toISOString();
-        docData.createdBy = auth.currentUser?.uid || 'unknown';
-        await addDoc(collection(db, 'questionBank'), docData);
+      if (onSaveToDatabase) {
+        await onSaveToDatabase(staging);
+        onAdded();
+      } else {
+        for (const q of staging) {
+          const docData = { ...q };
+          delete docData.id;
+          docData.createdAt = new Date().toISOString();
+          docData.createdBy = auth.currentUser?.uid || 'unknown';
+          await addDoc(collection(db, 'questionBank'), docData);
+        }
+        onAdded();
       }
-      onAdded();
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.CREATE, 'questionBank');
+      if (!onSaveToDatabase) {
+        handleFirestoreError(err, OperationType.CREATE, 'questionBank');
+      } else {
+        alert(err.message || 'Erro ao salvar');
+      }
     } finally {
       setSaving(false);
     }
@@ -962,8 +996,12 @@ function AddQuestionsView({
         <div className="flex items-center gap-3">
           {(hasAnyDuplicate || hasAnyMissingImage) && (
             <span className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-200 px-3 py-1.5 rounded-lg flex items-center gap-1.5 animate-pulse">
-              <AlertTriangle className="w-4 h-4 text-rose-500" />
-              {hasAnyDuplicate ? 'Remova as duplicadas para salvar!' : 'Anexe as imagens pendentes para salvar!'}
+              <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0" />
+              {hasAnyDuplicate 
+                ? 'Remova as duplicadas para salvar!' 
+                : missingImageNumbers.length > 0
+                  ? `Upload de imagem pendente na(s) Questão(ões) #${missingImageNumbers.join(', #')}!`
+                  : 'Anexe as imagens pendentes para salvar!'}
             </span>
           )}
           <button 
@@ -976,7 +1014,7 @@ function AddQuestionsView({
                 : "bg-indigo-600 hover:bg-indigo-700 shadow-indigo-100"
             )}
           >
-            {saving ? 'Salvando...' : 'Salvar no Banco'} <Save className="w-4 h-4" />
+            {saving ? 'Salvando...' : submitLabel} <Save className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -1105,7 +1143,7 @@ function AddQuestionsView({
           <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest px-2">Questões na Fila de Adição ({staging.length})</h3>
           {staging.map(q => {
             const { isDup, type: dupType } = checkDuplicate(q);
-            const hasMissingImage = q.hasImageWarning && (!q.images || q.images.length === 0);
+            const hasMissingImage = q.hasImageWarning && !q.ignoreImageWarning && (!q.images || q.images.length === 0);
             
             if (editingStagingId === q.id) {
               return (
@@ -1151,9 +1189,16 @@ function AddQuestionsView({
                   <div className="flex items-start gap-2 text-xs font-bold text-rose-700 bg-rose-100/60 border border-rose-200 p-3 rounded-xl">
                     <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
                     <div className="space-y-0.5">
-                      <div>Imagem detectada pela IA!</div>
-                      <div className="font-medium text-rose-600/80">
-                        Clique no botão de edição desta questão e anexe a imagem correspondente para poder salvar.
+                      <div className="text-rose-800 font-extrabold flex items-center gap-1.5">
+                        <span>⚠️ Upload manual de imagem obrigatório</span>
+                        {q.questionNumber && (
+                          <span className="bg-rose-200/80 text-rose-900 px-2 py-0.5 rounded text-[11px] font-black">
+                            Questão #{q.questionNumber}
+                          </span>
+                        )}
+                      </div>
+                      <div className="font-medium text-rose-700">
+                        Esta questão contém ou faz referência a uma imagem. Clique no ícone de edição (lápis) para anexar a imagem e liberar a gravação no banco.
                       </div>
                     </div>
                   </div>
@@ -1357,15 +1402,33 @@ function QuestionEditor({
         <textarea value={q.text} onChange={e => setQ({ ...q, text: e.target.value })} className="w-full h-32 bg-slate-50 border border-slate-200 rounded-xl p-3 outline-none font-medium text-sm resize-none focus:ring-2 focus:ring-indigo-600/20" placeholder="Enunciado" />
       </div>
 
-      {q.hasImageWarning && (!q.images || q.images.length === 0) && (
-        <div className="flex items-start gap-2 text-xs font-bold text-rose-700 bg-rose-100/60 border border-rose-200 p-3 rounded-xl">
-          <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
-          <div className="space-y-0.5">
-            <div>Imagem detectada pela IA!</div>
-            <div className="font-medium text-rose-600/80">
-              Por favor, anexe a imagem correspondente a esta questão clicando em "Adicionar" abaixo.
+      {q.hasImageWarning && !q.ignoreImageWarning && (!q.images || q.images.length === 0) && (
+        <div className="flex flex-col gap-3 bg-rose-100/60 border border-rose-200 p-3 rounded-xl">
+          <div className="flex items-start gap-2 text-xs font-bold text-rose-700">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
+            <div className="space-y-0.5">
+              <div className="text-rose-800 font-extrabold flex items-center gap-1.5">
+                <span>⚠️ Upload Manual de Imagem Requerido</span>
+                {q.questionNumber && (
+                  <span className="bg-rose-200/80 text-rose-900 px-2 py-0.5 rounded text-[11px] font-black">
+                    Questão #{q.questionNumber}
+                  </span>
+                )}
+              </div>
+              <div className="font-medium text-rose-700">
+                Por favor, anexe a imagem desta questão clicando em "Adicionar Imagem" abaixo para liberar a gravação no banco de questões.
+              </div>
             </div>
           </div>
+          <label className="flex items-center gap-2 text-xs text-rose-900 font-bold cursor-pointer hover:opacity-80 transition-opacity self-start bg-rose-200/50 py-1.5 px-3 rounded-lg border border-rose-300">
+            <input 
+              type="checkbox" 
+              className="rounded text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer" 
+              checked={q.ignoreImageWarning || false} 
+              onChange={e => setQ({ ...q, ignoreImageWarning: e.target.checked })} 
+            />
+            <span>A questão não possui imagem (ignorar aviso)</span>
+          </label>
         </div>
       )}
 

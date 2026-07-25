@@ -1,20 +1,24 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Globe, Search, Tag, User as UserIcon, BookOpen, Download } from 'lucide-react';
+import { Globe, Search, Tag, User as UserIcon, BookOpen, Download, Heart, Play, ArrowUpDown } from 'lucide-react';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, orderBy, limit, addDoc, updateDoc, doc, increment } from 'firebase/firestore';
+import { collection, query, where, getDocs, orderBy, limit, addDoc, updateDoc, setDoc, doc, increment, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { Quiz } from '../types';
 import { cn } from '../lib/utils';
 import { PREDEFINED_MAIN_TAGS } from './QuizzesView';
 
-export function CommunityView() {
+interface CommunityViewProps {
+  onSelectQuiz?: (quiz: Quiz) => void;
+}
+
+export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMainTag, setFilterMainTag] = useState('');
-
   const [filterSubtag, setFilterSubtag] = useState('');
-  
+  const [sortBy, setSortBy] = useState<'recent' | 'likes'>('recent');
+
   // Calculate unique subtags dynamically from all quizzes
   const allSubtags = Array.from(new Set(quizzes.flatMap(q => q.subtags || (q.subtag ? [q.subtag] : [])))).filter(t => t && (t as string).trim() !== '');
 
@@ -34,13 +38,41 @@ export function CommunityView() {
       let fetchedQuizzes: Quiz[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Quiz));
       
       // Sort descending by date locally
-      fetchedQuizzes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      fetchedQuizzes.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
       setQuizzes(fetchedQuizzes);
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, 'quizzes/public');
       console.error("Error fetching community quizzes:", err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleToggleLikeQuiz = async (quiz: Quiz) => {
+    if (!auth.currentUser || !quiz.id) {
+      alert('Faça login para curtir cadernos!');
+      return;
+    }
+    const uid = auth.currentUser.uid;
+    const currentLikes = quiz.likes || [];
+    const isLiked = currentLikes.includes(uid);
+
+    // Optimistic UI update
+    setQuizzes(prev => prev.map(item => {
+      if (item.id !== quiz.id) return item;
+      const updatedLikes = isLiked
+        ? currentLikes.filter(id => id !== uid)
+        : [...currentLikes, uid];
+      return { ...item, likes: updatedLikes };
+    }));
+
+    try {
+      const quizRef = doc(db, 'quizzes', quiz.id);
+      await setDoc(quizRef, {
+        likes: isLiked ? arrayRemove(uid) : arrayUnion(uid)
+      }, { merge: true });
+    } catch (err) {
+      console.error("Error toggling quiz like:", err);
     }
   };
 
@@ -96,8 +128,14 @@ export function CommunityView() {
     return matchesMainTag && matchesSubtag && matchesQuery;
   });
 
+  if (sortBy === 'likes') {
+    filteredQuizzes.sort((a, b) => ((b.likes || []).length) - ((a.likes || []).length));
+  } else {
+    filteredQuizzes.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  }
+
   return (
-    <div className="space-y-8 max-w-4xl mx-auto">
+    <div className="space-y-8 w-full max-w-4xl mx-auto">
       <header className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">Comunidade</h2>
@@ -107,7 +145,7 @@ export function CommunityView() {
           <select 
             value={filterMainTag}
             onChange={(e) => setFilterMainTag(e.target.value)}
-            className="bg-white border border-slate-200 rounded-xl py-3 px-4 outline-none focus:border-indigo-500 font-medium appearance-none cursor-pointer text-slate-700 md:w-48 shrink-0"
+            className="bg-white border border-slate-200 rounded-xl py-3 px-4 outline-none focus:border-indigo-500 font-medium appearance-none cursor-pointer text-slate-700 md:w-44 shrink-0"
           >
             <option value="">Grandes áreas</option>
             {PREDEFINED_MAIN_TAGS.map(tag => (
@@ -117,12 +155,20 @@ export function CommunityView() {
           <select 
             value={filterSubtag}
             onChange={(e) => setFilterSubtag(e.target.value)}
-            className="bg-white border border-slate-200 rounded-xl py-3 px-4 outline-none focus:border-indigo-500 font-medium appearance-none cursor-pointer text-slate-700 md:w-48 shrink-0"
+            className="bg-white border border-slate-200 rounded-xl py-3 px-4 outline-none focus:border-indigo-500 font-medium appearance-none cursor-pointer text-slate-700 md:w-44 shrink-0"
           >
             <option value="">Assuntos (Subtags)</option>
             {allSubtags.map(tag => (
               <option key={tag} value={tag}>{tag}</option>
             ))}
+          </select>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as any)}
+            className="bg-white border border-slate-200 rounded-xl py-3 px-3 outline-none focus:border-indigo-500 font-bold appearance-none cursor-pointer text-slate-700 md:w-36 shrink-0"
+          >
+            <option value="recent">Mais Recentes</option>
+            <option value="likes">Mais Curtidos</option>
           </select>
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
@@ -147,46 +193,77 @@ export function CommunityView() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filteredQuizzes.map((q) => (
-            <div key={q.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all flex flex-col h-full">
-              <div className="flex flex-wrap gap-1 mb-4">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-indigo-50 text-indigo-700 text-xs font-bold uppercase tracking-widest">
-                  <Tag className="w-3.5 h-3.5" />
-                  {q.mainTag || q.tag || "Sem assunto"}
-                </span>
-                {((Array.isArray(q.subtags) ? q.subtags : (typeof q.subtags === 'object' && q.subtags !== null ? Object.values(q.subtags) : (q.subtag ? [q.subtag] : []))) || []).filter(t => {
-                   return t && typeof t === 'string' && t.trim() !== '';
-                }).map((t, idx) => (
-                  <span key={`${q.id}-subtag-${t}-${idx}`} className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-200 text-slate-800 text-xs font-bold tracking-tight">
-                    {t}
+          {filteredQuizzes.map((q) => {
+            const likesArr = q.likes || [];
+            const isLiked = auth.currentUser ? likesArr.includes(auth.currentUser.uid) : false;
+
+            return (
+              <div key={q.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all flex flex-col h-full">
+                <div className="flex flex-wrap gap-1 mb-4">
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-indigo-50 text-indigo-700 text-xs font-bold uppercase tracking-widest">
+                    <Tag className="w-3.5 h-3.5" />
+                    {q.mainTag || q.tag || "Sem assunto"}
                   </span>
-                ))}
-                <span className="ml-auto text-xs font-bold text-slate-400 self-center">
-                  {new Date(q.createdAt).toLocaleDateString()}
-                </span>
+                  {((Array.isArray(q.subtags) ? q.subtags : (typeof q.subtags === 'object' && q.subtags !== null ? Object.values(q.subtags) : (q.subtag ? [q.subtag] : []))) || []).filter(t => {
+                     return t && typeof t === 'string' && t.trim() !== '';
+                  }).map((t, idx) => (
+                    <span key={`${q.id}-subtag-${t}-${idx}`} className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-200 text-slate-800 text-xs font-bold tracking-tight">
+                      {t}
+                    </span>
+                  ))}
+                  <span className="ml-auto text-xs font-bold text-slate-400 self-center">
+                    {q.createdAt ? new Date(q.createdAt).toLocaleDateString() : ''}
+                  </span>
+                </div>
+                <h3 className="text-lg font-bold text-slate-900 mb-2 leading-tight flex-1">{q.title || "Caderno sem título"}</h3>
+                <p className="text-slate-500 font-medium text-sm mb-4 flex items-center gap-2">
+                  <BookOpen className="w-4 h-4" /> {q.questions.length} questões
+                </p>
+                
+                <div className="flex items-center justify-between border-t border-slate-100 pt-4 mt-auto gap-2">
+                  <button 
+                    onClick={() => handleToggleLikeQuiz(q)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer shrink-0",
+                      isLiked 
+                        ? "bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100" 
+                        : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 hover:text-slate-900"
+                    )}
+                    title={isLiked ? "Descurtir caderno" : "Curtir caderno"}
+                  >
+                    <Heart className={cn("w-4 h-4", isLiked ? "fill-rose-500 text-rose-500" : "text-slate-400")} />
+                    <span>{likesArr.length}</span>
+                  </button>
+
+                  <div className="flex items-center gap-1.5 flex-1 justify-end">
+                    {onSelectQuiz && (
+                      <button
+                        onClick={() => onSelectQuiz(q)}
+                        className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1 transition-colors"
+                        title="Praticar caderno agora"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-emerald-600" />
+                        <span>Praticar</span>
+                      </button>
+                    )}
+                    <button 
+                      onClick={() => handleSaveToMyQuizzes(q)}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3 py-2 rounded-xl text-xs transition-colors flex items-center gap-1"
+                    >
+                      Salvar
+                    </button>
+                    <button 
+                      onClick={() => handleExport(q)}
+                      className="bg-slate-50 hover:bg-slate-100 text-slate-700 font-bold p-2 rounded-xl border border-slate-200 transition-colors"
+                      title="Baixar (.revisarei)"
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
               </div>
-              <h3 className="text-lg font-bold text-slate-900 mb-2 leading-tight flex-1">{q.title || "Caderno sem título"}</h3>
-              <p className="text-slate-500 font-medium text-sm mb-6 flex items-center gap-2">
-                <BookOpen className="w-4 h-4" /> {q.questions.length} questões
-              </p>
-              
-              <div className="flex gap-2 w-full mt-auto">
-                <button 
-                  onClick={() => handleSaveToMyQuizzes(q)}
-                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
-                >
-                  Salvar
-                </button>
-                <button 
-                  onClick={() => handleExport(q)}
-                  className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-700 font-bold py-3 rounded-xl border border-slate-200 transition-colors flex items-center justify-center gap-2"
-                  title="Baixar (.revisarei)"
-                >
-                  <Download className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

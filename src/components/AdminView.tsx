@@ -43,7 +43,11 @@ const CRITERIA_LABELS: Record<TitleCriteria, string> = {
   daily_goals_met: 'Metas Diárias Batidas',
   weekly_goals_met: 'Metas Semanais Batidas',
   responses_total: 'Total de Respostas',
-  saves_total: 'Total de Salvamentos'
+  saves_total: 'Total de Salvamentos',
+  correctAnswers: 'Questões corretas',
+  quizzesCompleted: 'Provas concluídas',
+  studyHours: 'Horas de estudo',
+  daysStreak: 'Dias de ofensiva'
 };
 
 export function AdminView() {
@@ -209,11 +213,11 @@ export function AdminView() {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
-      <header className="space-y-2">
-        <h2 className="text-3xl font-bold tracking-tight text-slate-900">Painel do Administrador</h2>
-        <p className="text-slate-500">Gerencie usuários, permissões, títulos e relatórios.</p>
-      </header>
+    <div className="space-y-8 w-full max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
+      <div>
+        <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">GERENCIAMENTO DO SISTEMA</h2>
+        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4 mt-1">Painel do Administrador</h1>
+      </div>
 
       <div className="flex gap-4 border-b border-slate-200 overflow-x-auto pb-px">
         {[

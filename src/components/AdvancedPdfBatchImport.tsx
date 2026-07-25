@@ -1,4 +1,4 @@
-import { apiFetch } from "../lib/firebase";
+import { apiFetch, parseJsonResponse } from "../lib/firebase";
 import React, { useState, useRef } from 'react';
 import { UploadCloud, Check, Save, FileText, Loader2, Play, Square, AlertTriangle } from 'lucide-react';
 import { BankQuestion } from '../types';
@@ -53,23 +53,16 @@ export function AdvancedPdfBatchImport({
       // 1. Upload PDF
       const formData = new FormData();
       formData.append('files', file);
-      
-      let uploadRes;
+          let uploadData;
       try {
-        uploadRes = await apiFetch('/api/upload-context', {
+        const uploadRes = await apiFetch('/api/upload-context', {
           method: 'POST',
           body: formData
         });
+        uploadData = await parseJsonResponse(uploadRes);
       } catch (e: any) {
-        throw new Error(`Erro de rede no upload: ${e.message}`);
+        throw new Error(`Falha no upload do arquivo: ${e.message}`);
       }
-      
-      if (!uploadRes.ok) {
-        const text = await uploadRes.text();
-        throw new Error(`Falha no upload do arquivo: ${uploadRes.status} ${text.substring(0, 100)}`);
-      }
-      
-      const uploadData = await uploadRes.json();
       
       if (!uploadData.files || uploadData.files.length === 0) {
         throw new Error('Falha no upload do arquivo: Nenhum arquivo retornado');
@@ -83,23 +76,17 @@ export function AdvancedPdfBatchImport({
 
       // 2. Extração do Gabarito
       setStatusText('Extraindo gabarito do final do documento...');
-      let gabaritoRes;
       try {
-        gabaritoRes = await apiFetch('/api/extract-answer-key-from-file', {
+        const gabaritoRes = await apiFetch('/api/extract-answer-key-from-file', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fileUri, fileMimeType })
         });
+        answerKey = await parseJsonResponse(gabaritoRes);
       } catch (e: any) {
-        throw new Error(`Erro de rede ao extrair gabarito: ${e.message}`);
+        console.warn(`Aviso ao extrair gabarito: ${e.message}`);
+        answerKey = {};
       }
-      
-      if (!gabaritoRes.ok) {
-        const text = await gabaritoRes.text();
-        throw new Error(`Falha ao extrair gabarito: ${gabaritoRes.status} ${text.substring(0, 100)}`);
-      }
-      
-      answerKey = await gabaritoRes.json();
       
       if (Object.keys(answerKey).length === 0) {
          console.warn("Nenhum gabarito estruturado foi encontrado. As respostas corretas poderão ficar vazias.");
@@ -119,40 +106,17 @@ export function AdvancedPdfBatchImport({
         const endIdx = Math.min(currentIdx + 4, totalQuestions);
         setStatusText(`Processando lote de questões ${currentIdx} a ${endIdx}...`);
 
-        // A) Checagem Anti-Duplicados
-        // Não temos o texto exato antes de transcrever, mas podemos confiar no "Institution + Year + Index" 
-        // ou verificar após transcrever. O prompt pede para verificar ANTES usando 'simulados/{id}/questoes'. 
-        // Como o app usa bankQuestions, vamos ter que verificar após a transcrição ou deduzir.
-        // O prompt original diz: "Se as questões daquele intervalo já existirem no banco de dados, o script exibe no console... e pula".
-        // Uma forma de simular isso é ver se já temos questões suficientes dessa Instituição/Ano.
-        // Vamos extrair primeiro, e ao extrair, checamos duplicatas exatas pelo texto ou número se possível.
-
         setStatusText(`Transcrevendo questões ${currentIdx} a ${endIdx} via IA...`);
-        let batchRes;
+        let batchData;
         try {
-          batchRes = await apiFetch('/api/extract-questions-batch-from-file', {
+          const batchRes = await apiFetch('/api/extract-questions-batch-from-file', {
              method: 'POST',
              headers: { 'Content-Type': 'application/json' },
              body: JSON.stringify({ fileUri, fileMimeType, startIdx: currentIdx, endIdx: endIdx })
           });
+          batchData = await parseJsonResponse(batchRes);
         } catch (e: any) {
-           console.error(`Erro de rede no lote ${currentIdx}-${endIdx}:`, e);
-           // Aguardar um pouco e tentar novamente na próxima iteração seria o ideal, mas por hora vamos pular o lote ou encerrar
-           throw new Error(`Erro de conexão durante o processamento do lote ${currentIdx}-${endIdx}. A extração foi interrompida.`);
-        }
-
-        if (!batchRes.ok) {
-           const errText = await batchRes.text();
-           console.error(`Erro no lote ${currentIdx}-${endIdx}: ${batchRes.status} ${errText.substring(0, 100)}`);
-           currentIdx = endIdx + 1;
-           continue;
-        }
-
-        let batchData;
-        try {
-           batchData = await batchRes.json();
-        } catch (e: any) {
-           console.error(`Falha ao ler JSON do lote ${currentIdx}-${endIdx}:`, e);
+           console.error(`Erro no lote ${currentIdx}-${endIdx}: ${e.message}`);
            currentIdx = endIdx + 1;
            continue;
         }
@@ -162,8 +126,34 @@ export function AdvancedPdfBatchImport({
         // Vincular gabarito e checar duplicatas
         const validQuestions: BankQuestion[] = [];
         
+        const isGabarito = (text: string, num?: string) => {
+          const textLower = (text || '').toLowerCase();
+          const numLower = (num || '').toLowerCase();
+          if (numLower.includes('gabarito') || numLower.includes('resposta')) return true;
+          if (textLower.includes('tabela de gabarito') || textLower.includes('gabarito oficial') || textLower.includes('respostas do simulado')) return true;
+          if (/^(?:\s*\d+[\.\-\s]+[A-E]\s*){3,}$/i.test(text.trim())) return true;
+          return false;
+        };
+
+        const checkHasImage = (qItem: any) => {
+          if (qItem.has_image || qItem.hasImageWarning || !!qItem.descricao_da_imagem) return true;
+          const text = qItem.enunciado || '';
+          if (/\b(imagem|figura|gr[áa]fico|radiografia|ecocardiograma|ecg|esquema|foto)\b/i.test(text)) {
+             if (!isGabarito(text, qItem.numero)) return true;
+          }
+          return false;
+        };
+        
         for (const q of extracted) {
+           // Ignorar se o item extraído for a tabela/lista do gabarito no final
+           if (isGabarito(q.enunciado || '', q.numero)) {
+              console.log(`Item "${q.numero || ''}" identificado como tabela de gabarito. Pulando...`);
+              continue;
+           }
+
            const answer = answerKey[q.numero] || '';
+           const qNumStr = q.numero ? String(q.numero) : undefined;
+           const imageNeeded = checkHasImage(q);
            
            const newQ: BankQuestion = {
               id: Math.random().toString(36).substring(2, 9),
@@ -172,10 +162,11 @@ export function AdvancedPdfBatchImport({
               options: q.alternativas || [],
               correctAnswer: answer,
               mainTag: q.area_medica || mainTag,
-              subtags: batchSubtags.length > 0 ? batchSubtags : (q.topicos || []), // Usar subtags inseridas manualmente
+              subtags: batchSubtags.length > 0 ? batchSubtags : (q.topicos || []),
               institution: q.banca || institution,
               year: q.ano || year,
-              hasImageWarning: !!q.descricao_da_imagem,
+              questionNumber: qNumStr,
+              hasImageWarning: imageNeeded,
               createdAt: new Date().toISOString(),
               createdBy: 'API_BATCH'
            };

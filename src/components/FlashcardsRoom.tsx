@@ -1,4 +1,4 @@
-import { apiFetch } from "../lib/firebase";
+import { apiFetch, parseJsonResponse } from "../lib/firebase";
 import React, { useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import { collection, query, where, getDocs, updateDoc, doc, increment, getDoc, setDoc, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
@@ -174,7 +174,12 @@ function FlashcardHtml({ html, isAnswer }: FlashcardHtmlProps) {
         }
         
         if (isMounted) {
-          setProcessedHtml(finalHtml);
+          // Remove any flickering animation classes and ensure solid occlusion
+          const sanitizedHtml = finalHtml
+            .replaceAll('animate-pulse', '')
+            .replaceAll('background: #4f46e5;', 'background-color: #4f46e5; opacity: 1;')
+            .replaceAll('background:#4f46e5;', 'background-color: #4f46e5; opacity: 1;');
+          setProcessedHtml(sanitizedHtml);
         }
       } catch (err) {
         console.error("General error in loadImages:", err);
@@ -210,6 +215,32 @@ export function FlashcardsRoom() {
   const [finished, setFinished] = useState(false);
   const [gradeFeedback, setGradeFeedback] = useState<'again' | 'hard' | 'good' | 'easy' | null>(null);
 
+  const [openedDecks, setOpenedDecks] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem('deck_opened_timestamps');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [deckEditModal, setDeckEditModal] = useState<{
+    isOpen: boolean;
+    oldTag: string;
+    newTag: string;
+    subtags: string;
+  }>({ isOpen: false, oldTag: '', newTag: '', subtags: '' });
+
+  const [cardEditModal, setCardEditModal] = useState<{
+    isOpen: boolean;
+    card: Flashcard | null;
+    question: string;
+    answer: string;
+    explanation: string;
+    tag: string;
+    subtag: string;
+  }>({ isOpen: false, card: null, question: '', answer: '', explanation: '', tag: '', subtag: '' });
+
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
     type: 'import' | 'edit' | 'delete' | 'delete-card' | 'message';
@@ -224,13 +255,16 @@ export function FlashcardsRoom() {
     fetchCards();
   }, []);
 
-  const fetchCards = async () => {
+  const fetchCards = async (background = false) => {
     if (!auth.currentUser) return;
-    setLoading(true);
-    setSelectedTag(null);
-    setCurrentIndex(0);
-    setIsFlipped(false);
-    setFinished(false);
+    
+    if (!background) {
+      setLoading(true);
+      setSelectedTag(null);
+      setCurrentIndex(0);
+      setIsFlipped(false);
+      setFinished(false);
+    }
     
     try {
       const q = query(
@@ -252,7 +286,7 @@ export function FlashcardsRoom() {
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, 'flashcards');
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   };
 
@@ -302,45 +336,44 @@ export function FlashcardsRoom() {
     const nextReviewDate = new Date();
     nextReviewDate.setDate(nextReviewDate.getDate() + newInterval);
 
-    try {
-      await updateDoc(doc(db, 'users', auth.currentUser.uid, 'flashcards', card.id), {
-        interval: newInterval,
-        easeFactor: newEase,
-        nextReview: nextReviewDate.toISOString()
-      });
-
-      // Update stats
-      try {
-        const statsRef = doc(db, 'users', auth.currentUser.uid, 'stats', 'main');
-        const docSnap = await getDoc(statsRef);
-        if (docSnap.exists()) {
-          await updateDoc(statsRef, { flashcardsReviewed: increment(1) });
-        } else {
-          await setDoc(statsRef, {
-            questionsAnswered: 0,
-            questionsCorrect: 0,
-            flashcardsReviewed: 1
-          });
-        }
-      } catch (err) {
-        console.error("Error updating stats", err);
-      }
-
-      // Delay transition to next card to let animation play out nicely
-      setTimeout(() => {
-        setGradeFeedback(null);
-        if (currentIndex < currentCards.length - 1) {
-          setCurrentIndex(v => v + 1);
-          setIsFlipped(false);
-        } else {
-          setFinished(true);
-        }
-      }, 120);
-
-    } catch (error) {
+    // Smooth UI feedback transition (~450ms) - balanced between instant and slow
+    setTimeout(() => {
       setGradeFeedback(null);
-      handleFirestoreError(error, OperationType.UPDATE, 'flashcards');
-    }
+      if (currentIndex < currentCards.length - 1) {
+        setCurrentIndex(v => v + 1);
+        setIsFlipped(false);
+      } else {
+        setFinished(true);
+        confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+      }
+    }, 450);
+
+    // Save progress asynchronously in background
+    const uid = auth.currentUser.uid;
+    const cardId = card.id;
+
+    updateDoc(doc(db, 'users', uid, 'flashcards', cardId), {
+      interval: newInterval,
+      easeFactor: newEase,
+      nextReview: nextReviewDate.toISOString()
+    }).catch(error => {
+      console.error("Error updating flashcard:", error);
+    });
+
+    const statsRef = doc(db, 'users', uid, 'stats', 'main');
+    getDoc(statsRef).then(docSnap => {
+      if (docSnap.exists()) {
+        updateDoc(statsRef, { flashcardsReviewed: increment(1) });
+      } else {
+        setDoc(statsRef, {
+          questionsAnswered: 0,
+          questionsCorrect: 0,
+          flashcardsReviewed: 1
+        });
+      }
+    }).catch(err => {
+      console.error("Error updating stats", err);
+    });
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -371,11 +404,7 @@ export function FlashcardsRoom() {
         method: 'POST', 
         body: formData 
       });
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new Error(`Erro do servidor: ${res.status} ${errorText.substring(0, 100)}`);
-      }
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       
       const cardsToImport = data.flashcards || [];
       if (cardsToImport.length === 0) {
@@ -529,25 +558,61 @@ export function FlashcardsRoom() {
     }
   };
 
-  const handleEditDeckInit = (e: React.MouseEvent, oldTag: string) => {
-    e.stopPropagation();
-    setModalState({
-      isOpen: true,
-      type: 'edit',
-      title: 'Renomear Deck',
-      message: 'Novo nome para o deck:',
-      inputValue: oldTag,
-      tag: oldTag
+  const handleSelectDeck = (tag: string) => {
+    setSelectedTag(tag);
+    if (tag !== 'ALL' && tag !== 'CREATE_CARD') {
+      const now = new Date().toISOString();
+      setOpenedDecks(prev => {
+        const updated = { ...prev, [tag]: now };
+        try {
+          localStorage.setItem('deck_opened_timestamps', JSON.stringify(updated));
+        } catch (e) {
+          console.error(e);
+        }
+        return updated;
+      });
+    }
+  };
+
+  const isDeckNew = (tag: string, deckCards: Flashcard[]) => {
+    if (!deckCards || deckCards.length === 0) return false;
+    const lastOpened = openedDecks[tag];
+    if (!lastOpened) return true;
+
+    const lastOpenedTime = new Date(lastOpened).getTime();
+    return deckCards.some(card => {
+      if (!card.createdAt) return false;
+      return new Date(card.createdAt).getTime() > lastOpenedTime;
     });
   };
 
-  const processEditDeck = async (newTag: string, oldTag: string) => {
-    if (!newTag || newTag.trim() === '' || newTag === oldTag || !auth.currentUser) return;
-    
+  const handleEditDeckInit = (e: React.MouseEvent, oldTag: string) => {
+    e.stopPropagation();
+    const cards = allCards.filter(c => (c.tag || 'Sem tag') === oldTag);
+    const existingSubtagsSet = new Set<string>();
+    cards.forEach(c => {
+      if (c.subtag) existingSubtagsSet.add(c.subtag);
+      if (c.subtags && Array.isArray(c.subtags)) c.subtags.forEach(st => existingSubtagsSet.add(st));
+    });
+    setDeckEditModal({
+      isOpen: true,
+      oldTag,
+      newTag: oldTag,
+      subtags: Array.from(existingSubtagsSet).join(', ')
+    });
+  };
+
+  const processEditDeck = async () => {
+    const { oldTag, newTag, subtags } = deckEditModal;
+    if (!newTag || newTag.trim() === '' || !auth.currentUser) return;
+
     setLoading(true);
     try {
       const cardsToUpdate = allCards.filter(c => (c.tag || 'Sem tag') === oldTag);
-      
+      const cleanNewTag = newTag.trim();
+      const cleanSubtag = subtags.trim();
+      const subtagsList = cleanSubtag ? cleanSubtag.split(',').map(s => s.trim()).filter(Boolean) : [];
+
       let batch = writeBatch(db);
       let count = 0;
       for (const card of cardsToUpdate) {
@@ -556,14 +621,19 @@ export function FlashcardsRoom() {
           batch = writeBatch(db);
         }
         const docRef = doc(db, 'users', auth.currentUser.uid, 'flashcards', card.id!);
-        batch.update(docRef, { tag: newTag.trim() });
+        batch.update(docRef, {
+          tag: cleanNewTag,
+          subtag: cleanSubtag,
+          subtags: subtagsList
+        });
         count++;
       }
       if (count > 0 && count % 500 !== 0) {
         await batch.commit();
       }
-      
-      fetchCards();
+
+      setDeckEditModal({ isOpen: false, oldTag: '', newTag: '', subtags: '' });
+      fetchCards(true);
     } catch (err) {
       console.error(err);
       setModalState({
@@ -572,6 +642,59 @@ export function FlashcardsRoom() {
         title: 'Erro',
         message: 'Erro ao editar o deck.'
       });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEditCardInit = (cardToEdit?: Flashcard) => {
+    const card = cardToEdit || currentCards[currentIndex];
+    if (!card) return;
+    setCardEditModal({
+      isOpen: true,
+      card,
+      question: card.question || '',
+      answer: card.answer || '',
+      explanation: card.explanation || '',
+      tag: card.tag || '',
+      subtag: card.subtag || (card.subtags?.[0] || '')
+    });
+  };
+
+  const processEditCard = async () => {
+    const { card, question, answer, explanation, tag, subtag } = cardEditModal;
+    if (!card || !card.id || !auth.currentUser) return;
+    if (!question.trim() || !tag.trim()) {
+      alert('A pergunta e o caderno/tag são obrigatórios.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const cleanSubtag = subtag.trim();
+      const subtagsList = cleanSubtag ? cleanSubtag.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+      const docRef = doc(db, 'users', auth.currentUser.uid, 'flashcards', card.id);
+      await updateDoc(docRef, {
+        question: question.trim(),
+        answer: answer.trim(),
+        explanation: explanation.trim(),
+        tag: tag.trim(),
+        subtag: cleanSubtag,
+        subtags: subtagsList
+      });
+
+      setCardEditModal({ isOpen: false, card: null, question: '', answer: '', explanation: '', tag: '', subtag: '' });
+      fetchCards(true);
+    } catch (err) {
+      console.error(err);
+      setModalState({
+        isOpen: true,
+        type: 'message',
+        title: 'Erro',
+        message: 'Erro ao editar o flashcard.'
+      });
+    } finally {
       setLoading(false);
     }
   };
@@ -651,6 +774,7 @@ export function FlashcardsRoom() {
         
       if (remainingInDeck.length === 0) {
         setFinished(true);
+        confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
       } else if (currentIndex >= remainingInDeck.length) {
         setCurrentIndex(remainingInDeck.length - 1);
       }
@@ -670,6 +794,7 @@ export function FlashcardsRoom() {
 
 
   const renderModal = () => (
+    <>
     <AnimatePresence>
         {modalState.isOpen && (
           <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -682,7 +807,7 @@ export function FlashcardsRoom() {
               <h3 className="text-xl font-bold text-slate-900 mb-2">{modalState.title}</h3>
               <p className="text-slate-600 mb-6">{modalState.message}</p>
               
-              {(modalState.type === 'import' || modalState.type === 'edit') && (
+              {(modalState.type === 'import') && (
                 <input
                   type="text"
                   autoFocus
@@ -693,9 +818,6 @@ export function FlashcardsRoom() {
                     if (e.key === 'Enter') {
                       if (modalState.type === 'import' && modalState.file) {
                         processImport(modalState.inputValue || '', modalState.file);
-                      } else if (modalState.type === 'edit' && modalState.tag) {
-                        processEditDeck(modalState.inputValue || '', modalState.tag);
-                        setModalState({ ...modalState, isOpen: false });
                       }
                     }
                   }}
@@ -718,9 +840,6 @@ export function FlashcardsRoom() {
                   onClick={() => {
                     if (modalState.type === 'import' && modalState.file) {
                       processImport(modalState.inputValue || '', modalState.file);
-                    } else if (modalState.type === 'edit' && modalState.tag) {
-                      processEditDeck(modalState.inputValue || '', modalState.tag);
-                      setModalState({ ...modalState, isOpen: false });
                     } else if (modalState.type === 'delete' && modalState.tag) {
                       processDeleteDeck(modalState.tag);
                       setModalState({ ...modalState, isOpen: false });
@@ -743,6 +862,157 @@ export function FlashcardsRoom() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Deck Edit Modal */}
+      <AnimatePresence>
+        {deckEditModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md border border-slate-200 space-y-4"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-bold text-slate-900">Editar Deck / Caderno</h3>
+                <button onClick={() => setDeckEditModal({ ...deckEditModal, isOpen: false })} className="p-1 hover:bg-slate-100 text-slate-400 rounded-lg">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Nome do Deck / Tag Principal</label>
+                  <input
+                    type="text"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 text-slate-800 font-bold"
+                    value={deckEditModal.newTag}
+                    onChange={(e) => setDeckEditModal({ ...deckEditModal, newTag: e.target.value })}
+                    placeholder="Ex: Clínica Médica"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Subtag(s) do Deck</label>
+                  <input
+                    type="text"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 text-slate-800 font-medium"
+                    value={deckEditModal.subtags}
+                    onChange={(e) => setDeckEditModal({ ...deckEditModal, subtags: e.target.value })}
+                    placeholder="Ex: Cardiologia, ECG, Valvopatias"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  onClick={() => setDeckEditModal({ ...deckEditModal, isOpen: false })}
+                  className="px-4 py-2 text-slate-600 font-medium hover:bg-slate-100 rounded-lg transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={processEditDeck}
+                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md shadow-indigo-600/20 transition-colors"
+                >
+                  Salvar Alterações
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Card Edit Modal */}
+      <AnimatePresence>
+        {cardEditModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-bold text-slate-900">Editar Flashcard</h3>
+                <button onClick={() => setCardEditModal({ ...cardEditModal, isOpen: false })} className="p-1 hover:bg-slate-100 text-slate-400 rounded-lg">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Caderno / Tag</label>
+                    <input
+                      type="text"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 text-slate-800 font-bold"
+                      value={cardEditModal.tag}
+                      onChange={(e) => setCardEditModal({ ...cardEditModal, tag: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Subtag</label>
+                    <input
+                      type="text"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 text-slate-800 font-medium"
+                      value={cardEditModal.subtag}
+                      onChange={(e) => setCardEditModal({ ...cardEditModal, subtag: e.target.value })}
+                      placeholder="Ex: Cardiologia"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Frente (Pergunta)</label>
+                  <textarea
+                    rows={3}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 text-slate-800 font-medium"
+                    value={cardEditModal.question}
+                    onChange={(e) => setCardEditModal({ ...cardEditModal, question: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Verso (Resposta)</label>
+                  <textarea
+                    rows={3}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 text-slate-800 font-medium"
+                    value={cardEditModal.answer}
+                    onChange={(e) => setCardEditModal({ ...cardEditModal, answer: e.target.value })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase text-slate-500 mb-1">Explicação (Opcional)</label>
+                  <textarea
+                    rows={2}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500 text-slate-800 font-medium"
+                    value={cardEditModal.explanation}
+                    onChange={(e) => setCardEditModal({ ...cardEditModal, explanation: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2 border-t border-slate-100">
+                <button
+                  onClick={() => setCardEditModal({ ...cardEditModal, isOpen: false })}
+                  className="px-4 py-2 text-slate-600 font-medium hover:bg-slate-100 rounded-lg transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={processEditCard}
+                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-md shadow-indigo-600/20 transition-colors"
+                >
+                  Salvar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </>
   );
 
   if (loading) {
@@ -761,13 +1031,16 @@ export function FlashcardsRoom() {
   // Tags grouping
   const tagGroups = allCards.reduce((acc, card) => {
     const tag = card.tag || 'Sem tag';
-    if (!acc[tag]) acc[tag] = { total: 0, due: 0 };
+    if (!acc[tag]) acc[tag] = { total: 0, due: 0, cards: [], subtags: new Set<string>() };
     acc[tag].total++;
+    acc[tag].cards.push(card);
+    if (card.subtag) acc[tag].subtags.add(card.subtag);
+    if (card.subtags && Array.isArray(card.subtags)) card.subtags.forEach((st: string) => acc[tag].subtags.add(st));
     if (new Date(card.nextReview).getTime() <= Date.now()) {
       acc[tag].due++;
     }
     return acc;
-  }, {} as Record<string, { total: number, due: number }>);
+  }, {} as Record<string, { total: number, due: number, cards: Flashcard[], subtags: Set<string> }>);
   
   const totalDue = allCards.filter(c => new Date(c.nextReview).getTime() <= Date.now()).length;
 
@@ -777,7 +1050,7 @@ export function FlashcardsRoom() {
       <FlashcardCreator 
         onClose={() => setSelectedTag(null)}
         onCardSaved={() => {
-          fetchCards();
+          fetchCards(true);
         }}
         existingDecks={existingDecks}
       />
@@ -788,7 +1061,7 @@ export function FlashcardsRoom() {
     if (allCards.length === 0) {
       return (
         <>
-        <div className="text-center py-20 space-y-8 bg-white rounded-2xl border border-slate-200 shadow-sm p-12 max-w-2xl mx-auto">
+        <div className="text-center py-20 space-y-8 bg-white rounded-2xl border border-slate-200 shadow-sm p-12 max-w-4xl mx-auto">
           <div className="flex justify-center">
             <div className="w-24 h-24 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center">
               <Book className="w-10 h-10 animate-pulse" />
@@ -889,33 +1162,59 @@ export function FlashcardsRoom() {
             </div>
           </div>
 
-          {Object.entries(tagGroups).map(([tag, count]: [string, any]) => (
-            <div 
-              key={tag}
-              onClick={() => setSelectedTag(tag)}
-              className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-indigo-300 hover:shadow-md cursor-pointer transition flex flex-col justify-between min-h-[160px]"
-            >
-              <div className="flex justify-between items-start mb-2">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-slate-100 text-slate-600 text-xs font-bold uppercase tracking-widest max-w-[60%] truncate">
-                  <TagIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">{tag}</span>
-                </span>
-                <div className="flex items-center gap-1">
-                  <Play className="w-5 h-5 text-slate-400" />
-                  <button onClick={(e) => handleEditDeckInit(e, tag)} className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-indigo-600 rounded-lg transition ml-1" title="Editar nome do deck">
-                    <Edit3 className="w-4 h-4" />
-                  </button>
-                  <button onClick={(e) => handleDeleteDeckInit(e, tag)} className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-red-500 rounded-lg transition" title="Excluir deck">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+          {Object.entries(tagGroups).map(([tag, group]: [string, any]) => {
+            const isNew = isDeckNew(tag, group.cards);
+            return (
+              <div 
+                key={tag}
+                onClick={() => handleSelectDeck(tag)}
+                className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-indigo-300 hover:shadow-md cursor-pointer transition flex flex-col justify-between min-h-[160px] relative overflow-hidden group"
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex items-center gap-2 max-w-[70%]">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-slate-100 text-slate-600 text-xs font-bold uppercase tracking-widest truncate">
+                      <TagIcon className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{tag}</span>
+                    </span>
+                    {isNew && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-black uppercase tracking-wider shadow-sm shrink-0">
+                        Novo (!)
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Play className="w-5 h-5 text-slate-400 group-hover:text-indigo-600 transition-colors" />
+                    <button onClick={(e) => handleEditDeckInit(e, tag)} className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-indigo-600 rounded-lg transition ml-1" title="Editar nome e tags do deck">
+                      <Edit3 className="w-4 h-4" />
+                    </button>
+                    <button onClick={(e) => handleDeleteDeckInit(e, tag)} className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-red-500 rounded-lg transition" title="Excluir deck">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-6 space-y-2">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-900">{tag}</h3>
+                    <p className="text-slate-500 font-medium text-sm">{group.due} pendentes de {group.total}</p>
+                  </div>
+                  {group.subtags && group.subtags.size > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {Array.from(group.subtags).slice(0, 4).map((st: any) => (
+                        <span key={st} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md font-semibold">
+                          #{st}
+                        </span>
+                      ))}
+                      {group.subtags.size > 4 && (
+                        <span className="text-[10px] bg-slate-100 text-slate-400 px-1.5 py-0.5 rounded-md font-semibold">
+                          +{group.subtags.size - 4}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="mt-8">
-                <h3 className="text-lg font-bold text-slate-900">{tag}</h3>
-                <p className="text-slate-500 font-medium text-sm">{count.due} pendentes de {count.total}</p>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
       {renderModal()}
@@ -930,7 +1229,7 @@ export function FlashcardsRoom() {
   if (finished || currentCards.length === 0) {
     return (
       <>
-      <div className="text-center py-20 space-y-8 bg-white rounded-2xl border border-slate-200 shadow-sm p-12 max-w-2xl mx-auto">
+      <div className="text-center py-20 space-y-8 bg-white rounded-2xl border border-slate-200 shadow-sm p-12 max-w-4xl mx-auto">
         <div className="flex justify-center">
           <div className="w-24 h-24 bg-green-50 text-green-500 rounded-full flex items-center justify-center">
             <Trophy className="w-10 h-10" />
@@ -941,7 +1240,7 @@ export function FlashcardsRoom() {
           <p className="text-slate-500 max-w-xs mx-auto">Você revisou este deck com sucesso.</p>
         </div>
         <button 
-          onClick={fetchCards}
+          onClick={() => { setFinished(false); setSelectedTag(null); }}
           className="px-8 py-3 bg-indigo-600 shadow-lg shadow-indigo-100 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors"
         >
           Voltar para Decks
@@ -955,7 +1254,7 @@ export function FlashcardsRoom() {
   const currentCard = currentCards[currentIndex];
 
   return (
-    <div className="space-y-8 max-w-2xl mx-auto">
+    <div className="space-y-8 w-full max-w-4xl mx-auto">
       {/* Header Info */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -967,6 +1266,13 @@ export function FlashcardsRoom() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button 
+            onClick={() => handleEditCardInit(currentCard)} 
+            className="p-1.5 hover:bg-slate-200 text-slate-500 hover:text-indigo-600 rounded-lg transition-colors"
+            title="Editar este flashcard"
+          >
+            <Edit3 className="w-5 h-5" />
+          </button>
           <button 
             onClick={() => handleDeleteCurrentCardInit()} 
             className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-lg transition-colors"
@@ -1036,7 +1342,7 @@ export function FlashcardsRoom() {
                 <motion.div 
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="absolute inset-0 bg-red-600 flex flex-col items-center justify-center z-30 text-white"
+                  className="absolute inset-0 bg-red-600 flex flex-col items-center justify-center z-30 text-white rounded-2xl"
                 >
                   <motion.div
                     initial={{ scale: 0.2, opacity: 0 }}
@@ -1050,12 +1356,31 @@ export function FlashcardsRoom() {
                 </motion.div>
               )}
 
+              {/* Feedback Overlay: DIFÍCIL (Hard) */}
+              {gradeFeedback === 'hard' && (
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="absolute inset-0 bg-amber-500 flex flex-col items-center justify-center z-30 text-white rounded-2xl"
+                >
+                  <motion.div
+                    initial={{ scale: 0.2, opacity: 0 }}
+                    animate={{ scale: 1.5, opacity: 1 }}
+                    transition={{ duration: 0.1, ease: "easeOut" }}
+                    className="flex flex-col items-center justify-center"
+                  >
+                    <Brain className="w-28 h-28 text-white stroke-[2]" />
+                    <span className="text-2xl font-black tracking-widest mt-6 uppercase">DIFÍCIL</span>
+                  </motion.div>
+                </motion.div>
+              )}
+
               {/* Feedback Overlay: BOM (Good) */}
               {gradeFeedback === 'good' && (
                 <motion.div 
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="absolute inset-0 bg-emerald-600 flex flex-col items-center justify-center z-30 text-white"
+                  className="absolute inset-0 bg-emerald-600 flex flex-col items-center justify-center z-30 text-white rounded-2xl"
                 >
                   <motion.div
                     initial={{ scale: 0.2, opacity: 0 }}
@@ -1074,7 +1399,7 @@ export function FlashcardsRoom() {
                 <motion.div 
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  className="absolute inset-0 bg-teal-600 flex flex-col items-center justify-center z-30 text-white"
+                  className="absolute inset-0 bg-teal-600 flex flex-col items-center justify-center z-30 text-white rounded-2xl"
                 >
                   <motion.div
                     initial={{ scale: 0.2, opacity: 0 }}
@@ -1105,7 +1430,7 @@ export function FlashcardsRoom() {
         <button onClick={() => handleGrade('hard')} className="bg-orange-500/10 hover:bg-orange-500/20 py-4 rounded-xl flex flex-col items-center justify-center transition-colors">
           <span className="text-xs font-bold text-orange-500/80 mb-1 tracking-wide">DIFÍCIL</span>
           <span className="text-[10px] text-orange-400/60 font-medium font-sans mb-1.5">1 dia</span>
-          <kbd className="bg-orange-500/10 px-1.5 py-0.5 rounded border border-orange-500/20 text-[9px] font-bold text-orange-500 font-sans">2</kbd>
+          <kbd className="bg-orange-500/10 px-1.5 py-0.5 rounded border border-orange-500/20 text-[9px] font-bold text-orange-500 font-sans uppercase">Tab / 2</kbd>
         </button>
         <button onClick={() => handleGrade('good')} className="bg-blue-500/10 hover:bg-blue-500/20 py-4 rounded-xl flex flex-col items-center justify-center transition-colors border border-blue-500/20">
           <span className="text-xs font-bold text-blue-600/80 mb-1 tracking-wide">BOM</span>
@@ -1125,6 +1450,7 @@ export function FlashcardsRoom() {
         onSpace={isFlipped ? () => handleGrade('again') : () => setIsFlipped(true)} 
         onEnter={isFlipped ? () => handleGrade('good') : () => setIsFlipped(true)}
         onCtrlEnter={isFlipped ? () => handleGrade('easy') : () => setIsFlipped(true)}
+        onTab={isFlipped ? () => handleGrade('hard') : undefined}
         on1={isFlipped ? () => handleGrade('again') : undefined}
         on2={isFlipped ? () => handleGrade('hard') : undefined}
         on3={isFlipped ? () => handleGrade('good') : undefined}
@@ -1136,9 +1462,13 @@ export function FlashcardsRoom() {
   );
 }
 
-function KeyDownListener({ onSpace, onEnter, onCtrlEnter, on1, on2, on3, on4 }: any) {
+function KeyDownListener({ onSpace, onEnter, onCtrlEnter, onTab, on1, on2, on3, on4 }: any) {
   useEffect(() => {
     const handleDown = (e: KeyboardEvent) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        onTab?.();
+      }
       if (e.code === 'Space') {
         e.preventDefault();
         onSpace?.();
@@ -1158,6 +1488,6 @@ function KeyDownListener({ onSpace, onEnter, onCtrlEnter, on1, on2, on3, on4 }: 
     };
     window.addEventListener('keydown', handleDown);
     return () => window.removeEventListener('keydown', handleDown);
-  }, [onSpace, onEnter, onCtrlEnter, on1, on2, on3, on4]);
+  }, [onSpace, onEnter, onCtrlEnter, onTab, on1, on2, on3, on4]);
   return null;
 }

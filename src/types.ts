@@ -1,135 +1,104 @@
+export enum View {
+  DASHBOARD = 'DASHBOARD',
+  BANK = 'BANK',
+  LANDING = 'LANDING',
+  REVIEW = 'REVIEW',
+  QUIZ = 'QUIZ',
+  RESULTS = 'RESULTS',
+  COMMUNITY = 'COMMUNITY',
+  FLASHCARDS = 'FLASHCARDS',
+  ADMIN = 'ADMIN'
+}
+
+export type TitleCriteria = 'correctAnswers' | 'quizzesCompleted' | 'studyHours' | 'daysStreak' | 'total_questions' | 'daily_questions' | 'weekly_questions' | 'flashcards_reviewed' | 'streak_days' | 'daily_goals_met' | 'weekly_goals_met' | 'responses_total' | 'saves_total';
+
+export interface TitleDefinition {
+  id?: string;
+  name: string;
+  icon?: string;
+  color?: string;
+  criteria: TitleCriteria;
+  requirement: number;
+}
+
+export interface UserProfile {
+  uid?: string;
+  name?: string;
+  email?: string;
+  authorized?: boolean;
+  role?: string;
+  title?: string;
+  earnedTitles?: string[];
+  totalCorrectAnswers?: number;
+  quizzesCompleted?: number;
+  studyHours?: number;
+  currentStreak?: number;
+  folderColors?: any;
+}
+
 export interface Question {
   id: string;
-  type?: 'multiple_choice' | 'discursive';
+  type: string;
   text: string;
-  options?: string[];
   correctAnswer: string;
+  options?: string[];
   explanation?: string;
   category?: string;
 }
 
-export interface KnowledgeFile {
-  name: string;
-  uri: string;
-  mimeType: string;
-  displayName: string;
-  expiresAt: number;
+export interface BankQuestion extends Question {
+  bankId?: string;
+  mainTag?: string;
+  subtag?: string;
+  subtags?: string[];
+  questionNumber?: number | string;
+  hasImageWarning?: boolean;
+  ignoreImageWarning?: boolean;
+  institution?: string;
+  year?: number | string;
+  createdAt?: string;
+  createdBy?: string;
 }
 
 export interface Quiz {
   id?: string;
   title: string;
-  tag?: string; // used as folder
-  mainTag?: string; // e.g. Neurologia, Pediatria
-  subtag?: string; // (deprecated)
-  subtags?: string[]; // Multiple subtags
-  isPublic?: boolean;
-  questions: Question[];
-  userId: string;
-  createdAt: string;
-  knowledgeBase?: KnowledgeFile[];
-}
-
-export interface BankQuestion {
-  id?: string;
-  type: 'multiple_choice' | 'discursive';
-  text: string;
-  options?: string[];
-  correctAnswer: string;
-  explanation?: string;
-  mainTag: string;
-  subtag?: string;
+  mainTag?: string;
   subtags?: string[];
-  institution?: string;
-  year?: string;
-  images?: string[];
-  hasImageWarning?: boolean;
-  createdAt: string;
-  createdBy: string;
+  tag?: string;
+  isPublic?: boolean;
+  userId?: string;
+  likes?: string[];
+  knowledgeBase?: any[];
+  questions: Question[];
+  createdAt?: string;
+  createdBy?: string;
 }
 
-export interface UserStats {
-  questionsAnswered: number;
-  questionsCorrect: number;
-  flashcardsReviewed: number;
+export interface ErrorReport {
+  id?: string;
+  message: string;
+  createdAt: string;
+  userName: string;
+  status: string;
 }
 
 export interface Flashcard {
   id?: string;
   question: string;
   answer: string;
-  explanation?: string;
-  category?: string;
-  nextReview: string; // ISO string
-  interval: number; // in days
+  explanation: string;
+  tag?: string;
+  nextReview: string;
+  interval: number;
   easeFactor: number;
   userId: string;
-  createdAt: string;
-  tag?: string;
+  createdAt?: string;
+  createdBy?: string;
 }
 
-export interface UserProfile {
-  uid: string;
-  name: string;
-  email: string;
-  authorized: boolean;
-  title?: string;
-  earnedTitles?: string[];
-  folderColors?: Record<string, string>;
-}
-
-export interface Comment {
-  id?: string;
-  quizId: string;
-  questionId: string;
-  quizTitle: string;
-  text: string;
-  userId: string;
-  userName: string;
-  userPhoto?: string;
-  userTitle?: string;
-  createdAt: string;
-}
-
-export interface ErrorReport {
-  id?: string;
-  userId: string;
-  userName: string;
-  userEmail: string;
-  message: string;
-  page: string;
-  createdAt: string;
-  status: 'pending' | 'resolved';
-}
-
-export type TitleCriteria = 
-  | 'total_questions' 
-  | 'daily_questions' 
-  | 'weekly_questions' 
-  | 'flashcards_reviewed' 
-  | 'streak_days' 
-  | 'daily_goals_met' 
-  | 'weekly_goals_met'
-  | 'responses_total'
-  | 'saves_total';
-
-export interface TitleDefinition {
-  id?: string;
-  name: string;
-  requirement: number;
-  criteria: TitleCriteria;
-  icon?: string;
-  color?: string;
-}
-
-export enum View {
-  DASHBOARD = 'dashboard',
-  LANDING = 'landing',
-  REVIEW = 'review',
-  QUIZ = 'quiz',
-  RESULTS = 'results',
-  FLASHCARDS = 'flashcards',
-  COMMUNITY = 'community',
-  ADMIN = 'admin',
-  BANK = 'bank',
+export interface ReviewResult {
+  nextReview: string;
+  interval: number;
+  easeFactor: number;
 }

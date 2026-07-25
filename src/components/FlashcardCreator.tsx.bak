@@ -28,7 +28,6 @@ interface EditorState {
 
 export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: FlashcardCreatorProps) {
   const [deck, setDeck] = useState('');
-  const [subtag, setSubtag] = useState('');
 
   const [front, setFront] = useState('');
   const [back, setBack] = useState('');
@@ -143,55 +142,16 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
   }, []);
 
   // Helper to upload media using Base64 to match the question bank behavior and avoid Storage 403s
-  const uploadAndGetUrl = async (file: File, subFolder: string, totalCount: number = 1): Promise<string> => {
+  const uploadAndGetUrl = async (file: File, subFolder: string): Promise<string> => {
     return new Promise<string>((resolve, reject) => {
-      const img = new window.Image();
       const reader = new FileReader();
-      
       reader.onload = (e) => {
-        if (!e.target?.result) return reject(new Error("Falha ao ler arquivo"));
-        
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-          
-          let MAX_SIZE = 800;
-          let quality = 0.7;
-          if (totalCount > 4) {
-            MAX_SIZE = 400;
-            quality = 0.5;
-          } else if (totalCount > 2) {
-            MAX_SIZE = 600;
-            quality = 0.6;
-          }
-          
-          if (width > height) {
-            if (width > MAX_SIZE) {
-              height = Math.round(height * (MAX_SIZE / width));
-              width = MAX_SIZE;
-            }
-          } else {
-            if (height > MAX_SIZE) {
-              width = Math.round(width * (MAX_SIZE / height));
-              height = MAX_SIZE;
-            }
-          }
-          
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) return resolve(e.target!.result as string);
-          
-          ctx.drawImage(img, 0, 0, width, height);
-          
-          const compressedDataUrl = canvas.toDataURL('image/webp', quality);
-          resolve(compressedDataUrl);
-        };
-        img.onerror = () => reject(new Error("Erro ao carregar imagem para compressão"));
-        img.src = e.target.result as string;
+        if (e.target?.result) {
+          resolve(e.target.result as string);
+        } else {
+          reject(new Error("Falha ao converter arquivo de imagem para Base64"));
+        }
       };
-      
       reader.onerror = () => reject(reader.error || new Error("Erro ao ler arquivo de imagem"));
       reader.readAsDataURL(file);
     });
@@ -216,17 +176,16 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
       triggerNotification(`Carregando ${imageFiles.length} imagem(ns) da ${field === 'front' ? 'frente' : 'resposta'}...`);
 
       try {
-        const totalCount = frontImages.length + backImages.length + imageFiles.length;
-        const urls = await Promise.all(imageFiles.map(file => uploadAndGetUrl(file, 'flashcardMedia', totalCount)));
+        const urls = await Promise.all(imageFiles.map(file => uploadAndGetUrl(file, 'flashcardMedia')));
         if (field === 'front') {
           setFrontImages(prev => {
-            const next = [...prev, ...urls.map(url => ({ id: uuidv4(), url, occlusions: [] }))];
+            const next = [...prev, ...urls];
             pushHistory({ ...getCurrentState(), frontImages: next });
             return next;
           });
         } else {
           setBackImages(prev => {
-            const next = [...prev, ...urls.map(url => ({ id: uuidv4(), url, occlusions: [] }))];
+            const next = [...prev, ...urls];
             pushHistory({ ...getCurrentState(), backImages: next });
             return next;
           });
@@ -251,18 +210,17 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
 
     try {
       const fileArray: File[] = Array.from(files);
-      const totalCount = frontImages.length + backImages.length + fileArray.length;
-      const urls = await Promise.all(fileArray.map(file => uploadAndGetUrl(file, 'flashcardMedia', totalCount)));
+      const urls = await Promise.all(fileArray.map(file => uploadAndGetUrl(file, 'flashcardMedia')));
       
       if (field === 'front') {
         setFrontImages(prev => {
-          const next = [...prev, ...urls.map(url => ({ id: uuidv4(), url, occlusions: [] }))];
+          const next = [...prev, ...urls];
           pushHistory({ ...getCurrentState(), frontImages: next });
           return next;
         });
       } else {
         setBackImages(prev => {
-          const next = [...prev, ...urls.map(url => ({ id: uuidv4(), url, occlusions: [] }))];
+          const next = [...prev, ...urls];
           pushHistory({ ...getCurrentState(), backImages: next });
           return next;
         });
@@ -314,17 +272,32 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
         handleClozeShortcut();
       }
 
-      // 4. Image Occlusion overlay: Ctrl + D
-      if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
+      // 4. Image Occlusion overlay: Ctrl + A
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
         e.preventDefault();
-        setIsOcclusionMode(prev => !prev);
-        triggerNotification(isOcclusionMode ? 'Modo Oclusão desativado' : 'Modo Oclusão ativo: Arraste sobre a imagem');
+        if (occlusionImageUrl) {
+          setIsDrawingOcclusion(prev => {
+            const next = !prev;
+            if (next && !occlusionRect) {
+              setOcclusionRect({ x: 25, y: 25, w: 50, h: 50 });
+            }
+            pushHistory({
+              ...getCurrentState(),
+              isDrawingOcclusion: next,
+              occlusionRect: next && !occlusionRect ? { x: 25, y: 25, w: 50, h: 50 } : occlusionRect
+            });
+            return next;
+          });
+        } else {
+          triggerNotification('Cole uma imagem primeiro!');
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [front, back, explanation, deck, frontImages, backImages, isOcclusionMode]);
+  }, [front, back, explanation, deck,
+    frontImages, backImages]);
 
   // Handle Cloze Deletion selection replacement
   const handleClozeShortcut = () => {
@@ -362,7 +335,57 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
     }
   };
 
-// Save Card to Firebase Firestore
+  // Upload Paste Listener (Clipboard Image Paste - fallback/occlusion-specific)
+  const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const activeEl = document.activeElement;
+    if (activeEl === frontRef.current || activeEl === backRef.current) {
+      return;
+    }
+
+    const items = e.clipboardData?.items;
+    if (!items || !auth.currentUser) return;
+
+    let imageFile: File | null = null;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        imageFile = items[i].getAsFile();
+        break;
+      }
+    }
+
+    if (imageFile) {
+      e.preventDefault(); 
+      setIsUploading(true);
+      triggerNotification('Fazendo upload da captura de tela...');
+
+      try {
+        const url = await uploadAndGetUrl(imageFile, 'flashcardMedia');
+
+        setOcclusionImageUrl(url);
+        // Default occlusion box in the middle
+        const defaultRect = { x: 30, y: 30, w: 40, h: 40 };
+        setOcclusionRect(defaultRect);
+        setIsDrawingOcclusion(true);
+
+        const nextState = {
+          ...getCurrentState(),
+          occlusionImageUrl: url,
+          occlusionRect: defaultRect,
+          isDrawingOcclusion: true
+        };
+        pushHistory(nextState);
+
+        triggerNotification('Captura de tela colada! Modo oclusão ativo.');
+      } catch (err: any) {
+        console.error("Paste upload failed:", err);
+        setErrorMessage("Erro ao salvar printscreen: " + err.message);
+      } finally {
+        setIsUploading(false);
+      }
+    }
+  };
+
+  // Save Card to Firebase Firestore
   const handleSave = async (): Promise<boolean> => {
     if (!auth.currentUser) return false;
 
@@ -387,42 +410,47 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
       finalAnswer = finalQuestion;
     }
 
-    // Render image function that handles occlusions
-    const renderAttachedImage = (img: AttachedImage, renderOcclusions: boolean) => {
-      const containerPrefix = `<div class="relative inline-block max-w-full overflow-hidden select-none border border-slate-200/50 rounded-xl bg-slate-50 p-1.5 shadow-sm my-4">`;
-      const imageTag = `<img src="${img.url}" alt="Imagem" class="max-w-full h-auto rounded-lg mx-auto object-contain" />`;
-      
-      let overlays = '';
-      if (renderOcclusions && img.occlusions.length > 0) {
-        overlays = img.occlusions.map(rect => {
-          const rectStyle = `position: absolute; left: ${rect.x}%; top: ${rect.y}%; width: ${rect.w}%; height: ${rect.h}%; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); background-color: #4f46e5; border: 2.5px solid #1e1b4b; opacity: 1; z-index: 20;`;
-          return `<div style="${rectStyle}" class="occlusion-block"></div>`;
-        }).join('');
-      }
-      
-      const containerSuffix = `</div>`;
-      return `${containerPrefix}${imageTag}${overlays}${containerSuffix}`;
-    };
-
+    // Append standard front images if uploaded/pasted (Accommodate elegantly in a grid or stack)
     if (frontImages.length > 0) {
-      const imgTagsWithOcclusion = frontImages.map(img => renderAttachedImage(img, true)).join('\n');
-      finalQuestion = `${finalQuestion}\n\n${imgTagsWithOcclusion}`;
-      
-      // If there are occlusions on front images, we need to show the CLEAN images in the answer
-      const hasAnyFrontOcclusions = frontImages.some(img => img.occlusions.length > 0);
-      if (hasAnyFrontOcclusions && backImages.length === 0) {
-        const cleanFrontImages = frontImages.map(img => renderAttachedImage(img, false)).join('\n');
-        finalAnswer = `${finalAnswer}\n\n${cleanFrontImages}`;
+      if (frontImages.length === 1) {
+        finalQuestion = `${finalQuestion}\n\n<div class="my-4 text-center"><img src="${frontImages[0]}" alt="Imagem Frente" class="max-w-full h-auto max-h-80 rounded-xl mx-auto shadow-md border border-slate-100 dark:border-slate-800 object-contain" /></div>`;
+      } else {
+        const imgTags = frontImages.map(url => 
+          `<div class="flex items-center justify-center p-1.5 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200/60 dark:border-slate-800"><img src="${url}" alt="Imagem Frente" class="max-w-full h-auto max-h-64 rounded-lg object-contain" /></div>`
+        ).join('');
+        finalQuestion = `${finalQuestion}\n\n<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 my-4">${imgTags}</div>`;
       }
     }
 
+    // Append standard back images if uploaded/pasted
     if (backImages.length > 0) {
-      const imgTagsWithOcclusion = backImages.map(img => renderAttachedImage(img, true)).join('\n');
-      finalAnswer = `${finalAnswer}\n\n${imgTagsWithOcclusion}`;
+      if (backImages.length === 1) {
+        finalAnswer = `${finalAnswer}\n\n<div class="my-4 text-center"><img src="${backImages[0]}" alt="Imagem Verso" class="max-w-full h-auto max-h-80 rounded-xl mx-auto shadow-md border border-slate-100 dark:border-slate-800 object-contain" /></div>`;
+      } else {
+        const imgTags = backImages.map(url => 
+          `<div class="flex items-center justify-center p-1.5 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200/60 dark:border-slate-800"><img src="${url}" alt="Imagem Verso" class="max-w-full h-auto max-h-64 rounded-lg object-contain" /></div>`
+        ).join('');
+        finalAnswer = `${finalAnswer}\n\n<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 my-4">${imgTags}</div>`;
+      }
     }
 
-    if (!finalQuestion && frontImages.length === 0) {
-      setErrorMessage('A Frente do card ou uma imagem é obrigatória.');
+    if (occlusionImageUrl && occlusionRect) {
+      // Solid, non-transparent block (no pulse, solid color 100% opacity)
+      const rectStyle = `position: absolute; left: ${occlusionRect.x}%; top: ${occlusionRect.y}%; width: ${occlusionRect.w}%; height: ${occlusionRect.h}%; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); background-color: #4f46e5; border: 2.5px solid #1e1b4b; opacity: 1; z-index: 20;`;
+      
+      const frontOverlay = `<div style="${rectStyle}" class="occlusion-block"></div>`;
+
+      const containerPrefix = `<div class="relative inline-block max-w-full overflow-hidden select-none border border-slate-200/50 rounded-xl bg-slate-50 p-1.5 shadow-sm mt-4">`;
+      const imageTag = `<img src="${occlusionImageUrl}" alt="Imagem Oclusiva" class="max-w-full h-auto rounded-lg mx-auto" />`;
+      const containerSuffix = `</div>`;
+
+      // Prepend to Frente and Verso
+      finalQuestion = `${finalQuestion}\n\n${containerPrefix}${imageTag}${frontOverlay}${containerSuffix}`;
+      finalAnswer = `${finalAnswer}\n\n${containerPrefix}${imageTag}${containerSuffix}`;
+    }
+
+    if (!finalQuestion && !occlusionImageUrl && frontImages.length === 0) {
+      setErrorMessage('A Frente do card ou uma Imagem de Oclusão/Conteúdo é obrigatória.');
       setSaveStatus('error');
       frontRef.current?.focus();
       return false;
@@ -435,8 +463,6 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
         answer: finalAnswer,
         explanation: explanation.trim(),
         tag: finalDeck,
-        subtag: subtag.trim(),
-        subtags: subtag.trim() ? [subtag.trim()] : [],
         nextReview: new Date().toISOString(),
         interval: 0,
         easeFactor: 2.5,
@@ -451,6 +477,9 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
       setFront('');
       setBack('');
       setExplanation('');
+      setOcclusionImageUrl('');
+      setOcclusionRect(null);
+      setIsDrawingOcclusion(false);
       setFrontImages([]);
       setBackImages([]);
       setErrorMessage('');
@@ -468,7 +497,9 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
 
       // Recalibrate and focus Frente input immediately
       frontRef.current?.focus();
-      setSaveStatus('idle');
+      setTimeout(() => {
+        setSaveStatus('idle');
+      }, 600);
 
       onCardSaved(); // Callback to trigger lists refresh in parent
       return true;
@@ -483,7 +514,7 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
   // Handler for Finalize Deck Button click
   const handleFinalize = async () => {
     const finalQuestion = front.trim();
-    if (finalQuestion || frontImages.length > 0 || backImages.length > 0) {
+    if (finalQuestion || occlusionImageUrl || frontImages.length > 0 || backImages.length > 0) {
       // Try to save first
       const success = await handleSave();
       if (!success) {
@@ -494,9 +525,81 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
     onClose();
   };
 
+  // Adjust Occlusion Rectangle bounds securely
+  const updateOcclusionBound = (prop: 'x' | 'y' | 'w' | 'h', val: number) => {
+    if (!occlusionRect) return;
+    const nextRect = { ...
+    [prop]: val };
+    
+    // Constraints validation
+    if (prop === 'x') nextRect.x = Math.max(0, Math.min(100 - occlusionRect.w, val));
+    if (prop === 'y') nextRect.y = Math.max(0, Math.min(100 - occlusionRect.h, val));
+    if (prop === 'w') nextRect.w = Math.max(5, Math.min(100 - occlusionRect.x, val));
+    if (prop === 'h') nextRect.h = Math.max(5, Math.min(100 - occlusionRect.y, val));
+
+    setOcclusionRect(nextRect);
+    pushHistory({
+      ...getCurrentState(),
+      occlusionRect: nextRect
+    });
+  };
+
+  // Mouse drag handles inside container
+  const occlusionContainerRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ x: number, y: number, rectX: number, rectY: number }>({ x: 0, y: 0, rectX: 0, rectY: 0 });
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!occlusionRect || !occlusionContainerRef.current) return;
+    
+    const container = occlusionContainerRef.current.getBoundingClientRect();
+    const clickX = ((e.clientX - container.left) / container.width) * 100;
+    const clickY = ((e.clientY - container.top) / container.height) * 100;
+
+    // Check if clicked inside the rectangle
+    if (
+      clickX >= occlusionRect.x && 
+      clickX <= occlusionRect.x + occlusionRect.w &&
+      clickY >= occlusionRect.y && 
+      clickY <= occlusionRect.y + occlusionRect.h
+    ) {
+      setIsDragging(true);
+      dragStartRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        rectX: occlusionRect.x,
+        rectY: occlusionRect.y
+      };
+      e.preventDefault();
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDragging || !occlusionRect || !occlusionContainerRef.current) return;
+
+    const container = occlusionContainerRef.current.getBoundingClientRect();
+    const deltaX = ((e.clientX - dragStartRef.current.x) / container.width) * 100;
+    const deltaY = ((e.clientY - dragStartRef.current.y) / container.height) * 100;
+
+    let newX = Math.max(0, Math.min(100 - occlusionRect.w, dragStartRef.current.rectX + deltaX));
+    let newY = Math.max(0, Math.min(100 - occlusionRect.h, dragStartRef.current.rectY + deltaY));
+
+    setOcclusionRect({
+      ...
+    x: Math.round(newX),
+      y: Math.round(newY)
+    });
+  };
+
+  const handleMouseUp = () => {
+    if (isDragging) {
+      setIsDragging(false);
+      pushHistory(getCurrentState());
+    }
+  };
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden p-6 md:p-8 space-y-6" ref={containerRef}>
+    <div onPaste={handlePaste} className="bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden p-6 md:p-8 space-y-6" ref={containerRef}>
       {/* Header */}
       <header className="flex items-center justify-between border-b border-slate-100 pb-4">
         <div className="flex items-center gap-3">
@@ -518,10 +621,10 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
       </header>
 
       {/* Main Workspace Grid */}
-      <div className="flex flex-col gap-8 max-w-4xl mx-auto">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         
         {/* Left Side: Fields Form */}
-        <div className="space-y-6">
+        <div className="lg:col-span-7 space-y-6">
           
           {/* Deck Selector */}
           <div className="space-y-2">
@@ -549,22 +652,6 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
             </div>
           </div>
 
-          {/* Subtag Selector */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-black uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                <Sliders className="w-3.5 h-3.5 text-indigo-500" /> Subtag / Específica (Opcional)
-              </label>
-            </div>
-            <input
-              type="text"
-              placeholder="Ex: Valvopatias, ECG, Tratamento..."
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500/20 text-slate-800 font-medium"
-              value={subtag}
-              onChange={(e) => setSubtag(e.target.value)}
-            />
-          </div>
-
           {/* Front field */}
           <div className="space-y-2 relative">
             <div className="flex items-center justify-between">
@@ -579,7 +666,7 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
                   onClick={() => frontImageInputRef.current?.click()}
                   className="text-[10px] text-indigo-600 font-extrabold hover:underline uppercase tracking-wider flex items-center gap-1"
                 >
-                  <ImageIcon className="w-3.5 h-3.5" /> + Imagem (ou Ctrl+V)
+                  <Image className="w-3.5 h-3.5" /> + Imagem (ou Ctrl+V)
                 </button>
                 <input
                   type="file"
@@ -602,21 +689,19 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
             />
             {/* Front Multiple Images Grid Preview */}
             {frontImages.length > 0 && (
-              <div className="flex flex-col gap-2 mt-2">
-                {frontImages.map((img, index) => (
-                  <ImageOcclusionEditor
-                    key={img.id}
-                    image={img}
-                    isOcclusionMode={isOcclusionMode}
-                    onUpdate={(updatedImage) => {
-                      setFrontImages(prev => {
-                        const next = [...prev];
-                        next[index] = updatedImage;
-                        return next;
-                      });
-                    }}
-                    onRemove={() => removeFrontImage(index)}
-                  />
+              <div className="flex flex-wrap gap-2 mt-2">
+                {frontImages.map((imgUrl, index) => (
+                  <div key={index} className="relative inline-block group border border-slate-200 rounded-xl p-1 bg-white shadow-sm">
+                    <img src={imgUrl} alt={`Frente Preview ${index + 1}`} className="h-20 max-w-[120px] rounded-lg object-contain" />
+                    <button
+                      type="button"
+                      onClick={() => removeFrontImage(index)}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center text-[10px] font-black shadow transition"
+                      title="Remover Imagem"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -629,13 +714,18 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
                 <CornerDownLeft className="w-3.5 h-3.5 text-indigo-500" /> Verso (Resposta)
               </label>
               <div className="flex items-center gap-2">
+                {occlusionImageUrl && (
+                  <span className="text-[10px] text-emerald-600 font-extrabold uppercase tracking-wider flex items-center gap-1">
+                    <Check className="w-3 h-3" /> Oclusão Ativa
+                  </span>
+                )}
                 <span className="text-slate-200">|</span>
                 <button
                   type="button"
                   onClick={() => backImageInputRef.current?.click()}
                   className="text-[10px] text-indigo-600 font-extrabold hover:underline uppercase tracking-wider flex items-center gap-1"
                 >
-                  <ImageIcon className="w-3.5 h-3.5" /> + Imagem (ou Ctrl+V)
+                  <Image className="w-3.5 h-3.5" /> + Imagem (ou Ctrl+V)
                 </button>
                 <input
                   type="file"
@@ -650,7 +740,7 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
             <textarea
               ref={backRef}
               rows={4}
-              placeholder="Digite a resposta do flashcard..."
+              placeholder={occlusionImageUrl ? "Opcional: Detalhes adicionais da resposta sobre a imagem..." : "Digite a resposta do flashcard..."}
               className="w-full bg-slate-50 border border-slate-200 rounded-xl p-4 outline-none focus:ring-2 focus:ring-indigo-500/20 text-slate-800 font-medium text-sm resize-none"
               value={back}
               onPaste={(e) => handleFieldPaste(e, 'back')}
@@ -658,21 +748,19 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
             />
             {/* Back Multiple Images Grid Preview */}
             {backImages.length > 0 && (
-              <div className="flex flex-col gap-2 mt-2">
-                {backImages.map((img, index) => (
-                  <ImageOcclusionEditor
-                    key={img.id}
-                    image={img}
-                    isOcclusionMode={isOcclusionMode}
-                    onUpdate={(updatedImage) => {
-                      setBackImages(prev => {
-                        const next = [...prev];
-                        next[index] = updatedImage;
-                        return next;
-                      });
-                    }}
-                    onRemove={() => removeBackImage(index)}
-                  />
+              <div className="flex flex-wrap gap-2 mt-2">
+                {backImages.map((imgUrl, index) => (
+                  <div key={index} className="relative inline-block group border border-slate-200 rounded-xl p-1 bg-white shadow-sm">
+                    <img src={imgUrl} alt={`Verso Preview ${index + 1}`} className="h-20 max-w-[120px] rounded-lg object-contain" />
+                    <button
+                      type="button"
+                      onClick={() => removeBackImage(index)}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center text-[10px] font-black shadow transition"
+                      title="Remover Imagem"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -745,12 +833,158 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: Flashc
             </button>
           </div>
 
+        </div>
+
+        {/* Right Side: Media Occlusion Workspace */}
+        <div className="lg:col-span-5 space-y-6 border-l border-slate-100 lg:pl-8 flex flex-col justify-between">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-black uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                <Image className="w-3.5 h-3.5 text-indigo-500" /> Área de Oclusão Visual
+              </label>
+              {occlusionImageUrl && (
+                <button 
+                  onClick={() => {
+                    setOcclusionImageUrl('');
+                    setOcclusionRect(null);
+                    setIsDrawingOcclusion(false);
+                    pushHistory({
+                      ...getCurrentState(),
+        isDrawingOcclusion: false
+                    });
+                  }}
+                  className="text-[10px] text-red-500 font-extrabold hover:underline uppercase tracking-wider"
+                >
+                  Excluir Imagem
+                </button>
+              )}
+            </div>
+
+            {/* Paste Canvas Frame */}
+            {!occlusionImageUrl ? (
+              <div 
+                className="border-2 border-dashed border-slate-200 hover:border-indigo-400 bg-slate-50/50 rounded-2xl p-8 flex flex-col items-center justify-center text-center transition min-h-[250px] cursor-pointer"
+                onClick={() => triggerNotification('Dê Ctrl+V com uma imagem copiada para fazer upload rápido!')}
+              >
+                <div className="w-14 h-14 bg-white shadow-sm border border-slate-100 text-slate-400 rounded-2xl flex items-center justify-center mb-4">
+                  <Clipboard className="w-6 h-6 animate-pulse" />
+                </div>
+                <h3 className="text-sm font-bold text-slate-800">Cole uma captura de tela</h3>
+                <p className="text-xs text-slate-400 max-w-[200px] mt-1 leading-normal">
+                  Aperte <kbd className="bg-slate-200 text-slate-700 px-1 rounded text-[10px] font-bold">Ctrl+V</kbd> com seu printscreen copiado para carregar direto para a oclusão.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Visual Canvas Display */}
+                <div className="relative inline-block overflow-hidden rounded-xl border border-slate-200 bg-slate-100 max-w-full select-none">
+                  {/* Container with relative sizing */}
+                  <div 
+                    ref={occlusionContainerRef}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                    className="relative inline-block max-w-full"
+                  >
+                    <img 
+                      src={occlusionImageUrl} 
+                      alt="Pasted Workspace" 
+                      className="max-w-full h-auto rounded-lg"
+                      draggable={false}
+                    />
+
+                    {/* Mask Rectangle */}
+                    {isDrawingOcclusion && occlusionRect && (
+                      <div
+                        onMouseDown={handleMouseDown}
+                        style={{
+                          position: 'absolute',
+                          left: `${occlusionRect.x}%`,
+                          top: `${occlusionRect.y}%`,
+                          width: `${occlusionRect.w}%`,
+                          height: `${occlusionRect.h}%`,
+                          cursor: isDragging ? 'grabbing' : 'grab'
+                        }}
+                        className="bg-indigo-600 opacity-100 border-2 border-indigo-950 shadow-2xl rounded flex items-center justify-center relative select-none"
+                      >
+                        <span className="text-[10px] text-white font-black uppercase tracking-widest bg-indigo-950/60 px-1.5 py-0.5 rounded">TAMPADO</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Bounds Sliders Controls */}
+                {isDrawingOcclusion && occlusionRect && (
+                  <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 space-y-4 shadow-inner">
+                    <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                      <Sliders className="w-3 h-3 text-indigo-500" /> Regulador da Tarja
+                    </h4>
+                    
+                    <div className="grid grid-cols-2 gap-4 text-xs font-bold text-slate-600">
+                      <div className="space-y-1">
+                        <div className="flex justify-between">
+                          <span>Posição X (%)</span>
+                          <span className="font-mono text-indigo-600">{occlusionRect.x}%</span>
+                        </div>
+                        <input 
+                          type="range" min="0" max="95" 
+                          value={occlusionRect.x} 
+                          onChange={(e) => updateOcclusionBound('x', parseInt(e.target.value))}
+                          className="w-full accent-indigo-600"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex justify-between">
+                          <span>Posição Y (%)</span>
+                          <span className="font-mono text-indigo-600">{occlusionRect.y}%</span>
+                        </div>
+                        <input 
+                          type="range" min="0" max="95" 
+                          value={occlusionRect.y} 
+                          onChange={(e) => updateOcclusionBound('y', parseInt(e.target.value))}
+                          className="w-full accent-indigo-600"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex justify-between">
+                          <span>Largura (%)</span>
+                          <span className="font-mono text-indigo-600">{occlusionRect.w}%</span>
+                        </div>
+                        <input 
+                          type="range" min="5" max="100" 
+                          value={occlusionRect.w} 
+                          onChange={(e) => updateOcclusionBound('w', parseInt(e.target.value))}
+                          className="w-full accent-indigo-600"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex justify-between">
+                          <span>Altura (%)</span>
+                          <span className="font-mono text-indigo-600">{occlusionRect.h}%</span>
+                        </div>
+                        <input 
+                          type="range" min="5" max="100" 
+                          value={occlusionRect.h} 
+                          onChange={(e) => updateOcclusionBound('h', parseInt(e.target.value))}
+                          className="w-full accent-indigo-600"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Productivity shortcut cheatsheet */}
           <div className="bg-slate-50 rounded-2xl border border-slate-100 p-4 space-y-2 text-[11px] font-medium text-slate-500 shadow-inner mt-6">
             <h4 className="font-extrabold uppercase tracking-widest text-slate-400 text-[9px] flex items-center gap-1">
               <Info className="w-3.5 h-3.5 text-indigo-500" /> Atalhos de Teclado (Ultra Produtividade)
             </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
               <div className="flex justify-between items-center bg-white px-2 py-1 rounded border border-slate-100 shadow-sm">
                 <span>Salvar & Limpar</span>
                 <kbd className="bg-slate-100 px-1.5 py-0.5 rounded text-[9px] font-bold text-indigo-600 border border-slate-200">Ctrl+S</kbd>

@@ -3,8 +3,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Target, CheckCircle2, RefreshCw, Trophy, Brain, Lightbulb, AlertCircle, Sparkles, User, GraduationCap, Edit2, X, Flame, Calendar, Zap, Star, Award } from 'lucide-react';
 import { auth, db } from '../lib/firebase';
 import { updateProfile } from 'firebase/auth';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { UserProfile, TitleDefinition, TitleCriteria } from '../types';
+import { getMainArea, DEFAULT_MAIN_AREAS } from '../lib/categories';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
 import { cn } from '../lib/utils';
 
@@ -51,38 +52,39 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
   const [savingProfile, setSavingProfile] = useState(false);
 
   useEffect(() => {
-    const fetchStats = async () => {
-      if (!auth.currentUser) return;
-      try {
-        const statsRef = doc(db, 'users', auth.currentUser.uid, 'stats', 'main');
-        const statsDoc = await getDoc(statsRef);
+    if (!auth.currentUser) {
+      setLoading(false);
+      return;
+    }
+
+    const statsRef = doc(db, 'users', auth.currentUser.uid, 'stats', 'main');
+    const unsubscribe = onSnapshot(statsRef, (statsDoc) => {
+      if (statsDoc.exists()) {
+        const data = statsDoc.data();
+        const today = new Date().toISOString().split('T')[0];
         
-        if (statsDoc.exists()) {
-          const data = statsDoc.data();
-          const today = new Date().toISOString().split('T')[0];
-          
-          setStats({
-            answered: data.questionsAnswered || 0,
-            progression: data.progressionQuestions || 0,
-            correct: data.questionsCorrect || 0,
-            reviewed: data.flashcardsReviewed || 0,
-            weekly: data.weeklyQuestionCount || 0,
-            streak: data.streak || 0,
-            dailyGoalsMet: data.dailyGoalsMet || 0,
-            weeklyGoalsMet: data.weeklyGoalsMet || 0,
-            daily: data.lastActivityDate === today ? (data.dailyQuestionCount || 0) : 0,
-            responses_total: data.responses_total || 0,
-            saves_total: data.saves_total || 0,
-            categoryStats: data.categoryStats || {}
-          });
-        }
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
+        setStats({
+          answered: data.questionsAnswered || 0,
+          progression: data.progressionQuestions || 0,
+          correct: data.questionsCorrect || 0,
+          reviewed: data.flashcardsReviewed || 0,
+          weekly: data.weeklyQuestionCount || 0,
+          streak: data.streak || 0,
+          dailyGoalsMet: data.dailyGoalsMet || 0,
+          weeklyGoalsMet: data.weeklyGoalsMet || 0,
+          daily: data.lastActivityDate === today ? (data.dailyQuestionCount || 0) : 0,
+          responses_total: data.responses_total || 0,
+          saves_total: data.saves_total || 0,
+          categoryStats: data.categoryStats || {}
+        });
       }
-    };
-    fetchStats();
+      setLoading(false);
+    }, (err) => {
+      console.error("Error listening to stats:", err);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const handleSaveProfile = async () => {
@@ -115,40 +117,100 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
   };
 
   const getNextTitleInfo = () => {
-    if (titlesList.length === 0) return { title: 'Lenda', nextTitle: 'Fim', req: 9999, criteria: 'total_questions', currentVal: stats.answered, icon: <Sparkles className="w-5 h-5" />, color: 'bg-indigo-50|text-indigo-600|border-indigo-100' };
+    const rawList = titlesList.length > 0 ? titlesList : [
+      { id: 't1', name: 'Estudante de Medicina', requirement: 0, criteria: 'total_questions', icon: 'GraduationCap', color: 'bg-blue-50|text-blue-600|border-blue-100' },
+      { id: 't2', name: 'Interno de Medicina', requirement: 50, criteria: 'total_questions', icon: 'Brain', color: 'bg-indigo-50|text-indigo-600|border-indigo-100' },
+      { id: 't3', name: 'Residente Especialista', requirement: 150, criteria: 'total_questions', icon: 'Target', color: 'bg-violet-50|text-violet-600|border-violet-100' },
+      { id: 't4', name: 'Preceptor Clínico', requirement: 300, criteria: 'total_questions', icon: 'Award', color: 'bg-emerald-50|text-emerald-600|border-emerald-100' },
+      { id: 't5', name: 'Mestre da Medicina', requirement: 500, criteria: 'total_questions', icon: 'Star', color: 'bg-amber-50|text-amber-600|border-amber-100' },
+      { id: 't6', name: 'Lenda Médica', requirement: 1000, criteria: 'total_questions', icon: 'Trophy', color: 'bg-rose-50|text-rose-600|border-rose-100' }
+    ] as TitleDefinition[];
 
-    const earned = userData?.earnedTitles || [];
-    const next = titlesList.find(t => !earned.includes(t.name));
-    
-    if (!next) return { title: 'Elite', nextTitle: 'Fim', req: 0, criteria: 'total_questions', currentVal: stats.answered, icon: <Trophy className="w-5 h-5" />, color: 'bg-amber-50|text-amber-600|border-amber-100' };
+    const activeList = [...rawList].sort((a, b) => a.requirement - b.requirement);
 
-    let currentVal = 0;
-    switch(next.criteria) {
-      case 'total_questions': currentVal = stats.answered; break;
-      case 'daily_questions': currentVal = stats.daily; break;
-      case 'weekly_questions': currentVal = stats.weekly; break;
-      case 'flashcards_reviewed': currentVal = stats.reviewed; break;
-      case 'streak_days': currentVal = stats.streak; break;
-      case 'daily_goals_met': currentVal = stats.dailyGoalsMet; break;
-      case 'weekly_goals_met': currentVal = stats.weeklyGoalsMet; break;
-      case 'responses_total': currentVal = stats.responses_total; break;
-      case 'saves_total': currentVal = stats.saves_total; break;
+    const getVal = (criteria: TitleCriteria) => {
+      switch(criteria) {
+        case 'total_questions': return stats.answered;
+        case 'daily_questions': return stats.daily;
+        case 'weekly_questions': return stats.weekly;
+        case 'flashcards_reviewed': return stats.reviewed;
+        case 'streak_days': return stats.streak;
+        case 'daily_goals_met': return stats.dailyGoalsMet;
+        case 'weekly_goals_met': return stats.weeklyGoalsMet;
+        case 'responses_total': return stats.responses_total;
+        case 'saves_total': return stats.saves_total;
+        default: return stats.answered;
+      }
+    };
+
+    const earnedSet = new Set<string>(userData?.earnedTitles || []);
+    if (activeList.length > 0) {
+      earnedSet.add(activeList[0].name);
     }
 
+    activeList.forEach(t => {
+      if (getVal(t.criteria) >= t.requirement) {
+        earnedSet.add(t.name);
+      }
+    });
+
+    let currentTitleObj = activeList[0];
+    for (let i = activeList.length - 1; i >= 0; i--) {
+      if (earnedSet.has(activeList[i].name)) {
+        currentTitleObj = activeList[i];
+        break;
+      }
+    }
+
+    if (userData?.title && activeList.some(t => t.name === userData.title)) {
+      const selectedObj = activeList.find(t => t.name === userData.title);
+      if (selectedObj) currentTitleObj = selectedObj;
+    }
+
+    const nextTitleObj = activeList.find(t => t.requirement > currentTitleObj.requirement && !earnedSet.has(t.name)) 
+      || activeList.find(t => t.requirement > currentTitleObj.requirement);
+
+    if (!nextTitleObj) {
+      return { 
+        currentTitle: currentTitleObj.name, 
+        nextTitle: 'Nível Máximo', 
+        req: currentTitleObj.requirement, 
+        prevReq: currentTitleObj.requirement,
+        criteria: currentTitleObj.criteria, 
+        currentVal: getVal(currentTitleObj.criteria), 
+        icon: <Trophy className="w-5 h-5 text-amber-500" />, 
+        color: currentTitleObj.color || 'bg-amber-50|text-amber-600|border-amber-100',
+        progress: 100
+      };
+    }
+
+    const currentVal = getVal(nextTitleObj.criteria);
+    const prevReq = currentTitleObj.requirement;
+    const nextReq = nextTitleObj.requirement;
+
+    const progressRange = nextReq - prevReq;
+    const progressVal = currentVal - prevReq;
+    const progress = progressRange > 0 
+      ? Math.min(100, Math.max(0, (progressVal / progressRange) * 100))
+      : 100;
+
     return {
-      nextTitle: next.name,
-      req: next.requirement,
-      criteria: next.criteria,
+      currentTitle: currentTitleObj.name,
+      nextTitle: nextTitleObj.name,
+      req: nextReq,
+      prevReq,
+      criteria: nextTitleObj.criteria,
       currentVal,
-      icon: renderIcon(next.icon),
-      color: next.color || 'bg-indigo-50|text-indigo-600|border-indigo-100'
+      icon: renderIcon(nextTitleObj.icon),
+      color: nextTitleObj.color || 'bg-indigo-50|text-indigo-600|border-indigo-100',
+      progress
     };
   };
 
   const nextTitleInfo = getNextTitleInfo();
-  const progressToNext = nextTitleInfo.req === 0 ? 100 : Math.min(100, (nextTitleInfo.currentVal / nextTitleInfo.req) * 100);
+  const progressToNext = nextTitleInfo.progress;
   
-  const currentTitleDef = titlesList.find(t => t.name === (userData?.title || ''));
+  const currentTitleDef = titlesList.find(t => t.name === (userData?.title || nextTitleInfo.currentTitle));
   const colorParts = currentTitleDef?.color?.split('|') || ['bg-slate-50', 'text-slate-600', 'border-slate-100'];
 
   const performanceData = [
@@ -162,8 +224,13 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
   const weeklyProgress = Math.min(stats.weekly, weeklyGoal);
 
   return (
-    <div className="space-y-8 max-w-4xl mx-auto">
-      <div className="bg-white rounded-3xl p-8 border border-slate-200 shadow-sm flex flex-col md:flex-row items-center gap-8 relative overflow-hidden">
+    <div className="space-y-8 w-full max-w-4xl mx-auto">
+      <div>
+        <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">DESEMPENHO E ESTATÍSTICAS</h2>
+        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4 mt-1">Avaliação Geral</h1>
+      </div>
+
+      <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-sm flex flex-col md:flex-row items-center gap-6 sm:gap-8 relative overflow-hidden">
         <button 
           onClick={() => {
             setEditName(auth.currentUser?.displayName || "");
@@ -194,12 +261,10 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
         <div className="flex-1 text-center md:text-left space-y-4">
           <div>
             <div className="flex flex-col md:flex-row md:items-center gap-2">
-              <h1 className="text-2xl font-bold text-slate-900">Olá, {auth.currentUser?.displayName?.split(' ')[0] || 'Estudante'}!</h1>
-              {userData?.title && (
-                <span className={cn("inline-flex text-[10px] font-black uppercase px-2 py-0.5 rounded-full border", colorParts[0], colorParts[1], colorParts[2])}>
-                  {userData.title}
-                </span>
-              )}
+              <h2 className="text-xl font-bold text-slate-900">Olá, {auth.currentUser?.displayName?.split(' ')[0] || 'Estudante'}!</h2>
+              <span className={cn("inline-flex text-[10px] font-black uppercase px-2.5 py-1 rounded-full border shadow-2xs", colorParts[0], colorParts[1], colorParts[2])}>
+                {userData?.title || nextTitleInfo.currentTitle}
+              </span>
             </div>
             {auth.currentUser?.email === 'rmourari@ufpi.edu.br' && (
               <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mt-1">Soberano Administrador</p>
@@ -207,19 +272,19 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
           </div>
           
           <div className="space-y-2">
-            <div className="flex justify-between text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">
-               <span>Próximo Nível: {nextTitleInfo.nextTitle}</span>
-               <span>{Math.floor(progressToNext)}%</span>
+            <div className="flex justify-between items-center text-xs font-bold text-slate-500">
+               <span>Nível: <strong className="text-indigo-600 font-extrabold">{nextTitleInfo.currentTitle}</strong></span>
+               <span>Próximo: <strong className="text-slate-800 font-extrabold">{nextTitleInfo.nextTitle}</strong> ({Math.floor(progressToNext)}%)</span>
             </div>
-            <div className="h-4 w-full bg-slate-50 rounded-full overflow-hidden border border-slate-100 p-0.5">
+            <div className="h-4 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200 p-0.5">
                <motion.div 
                  initial={{ width: 0 }}
                  animate={{ width: `${progressToNext}%` }}
-                 className="h-full bg-indigo-500 rounded-full shadow-sm shadow-indigo-100"
+                 className="h-full bg-indigo-600 rounded-full shadow-xs shadow-indigo-200"
                />
             </div>
-            <p className="text-[9px] text-slate-300 font-bold text-right uppercase tracking-wider">
-               {nextTitleInfo.req > 0 ? `Faltam ${Math.max(0, nextTitleInfo.req - nextTitleInfo.currentVal)} p/ meta` : 'Meta de Conquistas Atingida!'}
+            <p className="text-[10px] font-extrabold text-slate-400 text-right uppercase tracking-wider">
+               {nextTitleInfo.nextTitle !== 'Nível Máximo' ? `${nextTitleInfo.currentVal} / ${nextTitleInfo.req} questões (${Math.max(0, nextTitleInfo.req - nextTitleInfo.currentVal)} p/ avançar)` : 'Nível Máximo Atingido!'}
             </p>
           </div>
         </div>
@@ -232,7 +297,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
           { label: 'Streak', val: stats.streak, icon: <Flame className="w-5 h-5" />, color: 'text-orange-600', bg: 'bg-orange-50' },
           { label: 'Revisados', val: stats.reviewed, icon: <RefreshCw className="w-5 h-5" />, color: 'text-violet-600', bg: 'bg-violet-50' },
         ].map((s, i) => (
-          <div key={i} className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm">
+          <div key={i} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
             <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center mb-3", s.bg, s.color)}>
               {s.icon}
             </div>
@@ -243,7 +308,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col items-center">
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center">
           <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Aproveitamento</h3>
           <div className="w-full h-40">
             <ResponsiveContainer width="100%" height="100%">
@@ -271,7 +336,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
           { label: 'Meta Diária', val: dailyProgress, max: dailyGoal, color: '#6366f1', sub: 'hoje' },
           { label: 'Meta Semanal', val: weeklyProgress, max: weeklyGoal, color: '#8b5cf6', sub: 'semana' }
         ].map((meta, i) => (
-          <div key={i} className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col items-center">
+          <div key={i} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center">
             <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">{meta.label}</h3>
             <div className="w-full h-40">
               <ResponsiveContainer width="100%" height="100%">
@@ -295,30 +360,56 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
         ))}
       </div>
 
-      <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm mt-6">
+      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <h3 className="text-[12px] font-black text-slate-400 uppercase tracking-widest mb-6">Desempenho por Grande Área</h3>
         <div className="space-y-4">
-          {['Clínica Médica', 'Cirurgia Geral', 'Pediatria', 'Ginecologia', 'Obstetrícia', 'Medicina de Família e Comunidade'].map(area => {
-            const areaStats = stats.categoryStats[area] || { correct: 0, total: 0 };
-            const percentage = areaStats.total > 0 ? Math.round((areaStats.correct / areaStats.total) * 100) : 0;
-            return (
-              <div key={area} className="flex flex-col gap-1.5">
-                <div className="flex justify-between items-end">
-                  <span className="text-sm font-bold text-slate-700">{area}</span>
-                  <span className="text-xs font-bold text-slate-500">
-                    {areaStats.correct} / {areaStats.total} ({percentage}%)
-                  </span>
+          {(() => {
+            const aggregatedCategoryStats: Record<string, { correct: number, total: number }> = {};
+            
+            DEFAULT_MAIN_AREAS.forEach(area => {
+              aggregatedCategoryStats[area] = { correct: 0, total: 0 };
+            });
+
+            Object.entries(stats.categoryStats || {}).forEach(([catKey, catData]) => {
+              const data = catData as { correct?: number; total?: number };
+              const mainArea = getMainArea(catKey);
+              if (!aggregatedCategoryStats[mainArea]) {
+                aggregatedCategoryStats[mainArea] = { correct: 0, total: 0 };
+              }
+              aggregatedCategoryStats[mainArea].correct += data.correct || 0;
+              aggregatedCategoryStats[mainArea].total += data.total || 0;
+            });
+
+            const displayAreas = Array.from(new Set([
+              ...DEFAULT_MAIN_AREAS,
+              ...Object.keys(aggregatedCategoryStats).filter(a => aggregatedCategoryStats[a].total > 0)
+            ]));
+
+            return displayAreas.map(area => {
+              const areaStats = aggregatedCategoryStats[area] || { correct: 0, total: 0 };
+              const percentage = areaStats.total > 0 ? Math.round((areaStats.correct / areaStats.total) * 100) : 0;
+              return (
+                <div key={area} className="flex flex-col gap-1.5">
+                  <div className="flex justify-between items-end">
+                    <span className="text-sm font-bold text-slate-700">{area}</span>
+                    <span className="text-xs font-bold text-slate-500">
+                      <span className="text-emerald-600 font-bold">{areaStats.correct}</span> / {areaStats.total} questões ({percentage}%)
+                    </span>
+                  </div>
+                  <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${percentage}%` }}
+                      className={cn(
+                        "h-full rounded-full transition-all duration-500",
+                        percentage >= 70 ? "bg-emerald-500" : percentage >= 50 ? "bg-amber-500" : areaStats.total > 0 ? "bg-indigo-500" : "bg-slate-300"
+                      )}
+                    />
+                  </div>
                 </div>
-                <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: `${percentage}%` }}
-                    className="h-full bg-indigo-500 rounded-full"
-                  />
-                </div>
-              </div>
-            );
-          })}
+              );
+            });
+          })()}
         </div>
       </div>
 

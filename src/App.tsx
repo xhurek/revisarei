@@ -17,6 +17,15 @@ import { AnimatePresence, motion } from 'motion/react';
 import { LogOut, BookOpen, Brain, FileText, LayoutDashboard, Tablet, Globe, Bell, User as UserIcon, Layers, Shield, MessageSquare, AlertCircle, Database } from 'lucide-react';
 import { cn } from './lib/utils';
 
+export const DEFAULT_TITLES: TitleDefinition[] = [
+  { id: 't1', name: 'Estudante de Medicina', requirement: 0, criteria: 'total_questions', icon: 'GraduationCap', color: 'bg-blue-50|text-blue-600|border-blue-100' },
+  { id: 't2', name: 'Interno de Medicina', requirement: 50, criteria: 'total_questions', icon: 'Brain', color: 'bg-indigo-50|text-indigo-600|border-indigo-100' },
+  { id: 't3', name: 'Residente Especialista', requirement: 150, criteria: 'total_questions', icon: 'Target', color: 'bg-violet-50|text-violet-600|border-violet-100' },
+  { id: 't4', name: 'Preceptor Clínico', requirement: 300, criteria: 'total_questions', icon: 'Award', color: 'bg-emerald-50|text-emerald-600|border-emerald-100' },
+  { id: 't5', name: 'Mestre da Medicina', requirement: 500, criteria: 'total_questions', icon: 'Star', color: 'bg-amber-50|text-amber-600|border-amber-100' },
+  { id: 't6', name: 'Lenda Médica', requirement: 1000, criteria: 'total_questions', icon: 'Trophy', color: 'bg-rose-50|text-rose-600|border-rose-100' }
+];
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [userData, setUserData] = useState<UserProfile | null>(null);
@@ -34,7 +43,7 @@ export default function App() {
       return saved ? JSON.parse(saved) : null;
     } catch { return null; }
   });
-  const [lastResults, setLastResults] = useState<{ score: number, total: number, missed: any[], tag?: string, title?: string } | null>(() => {
+  const [lastResults, setLastResults] = useState<{ score: number, total: number, missed: any[], tag?: string, title?: string, timeElapsed?: number } | null>(() => {
     try {
       const saved = sessionStorage.getItem('lastResults');
       return saved ? JSON.parse(saved) : null;
@@ -90,6 +99,36 @@ export default function App() {
   }, []);
 
   const notifRef = useRef<HTMLDivElement>(null);
+  
+  // Horizontal drag state for top menu
+  const menuScrollRef = useRef<HTMLDivElement>(null);
+  const [isDraggingMenu, setIsDraggingMenu] = useState(false);
+  const [startX, setStartX] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!menuScrollRef.current) return;
+    setIsDraggingMenu(true);
+    setStartX(e.pageX - menuScrollRef.current.offsetLeft);
+    setScrollLeft(menuScrollRef.current.scrollLeft);
+  };
+
+  const handleMouseLeave = () => {
+    setIsDraggingMenu(false);
+  };
+
+  const handleMouseUp = () => {
+    setIsDraggingMenu(false);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDraggingMenu || !menuScrollRef.current) return;
+    e.preventDefault();
+    const x = e.pageX - menuScrollRef.current.offsetLeft;
+    const walk = (x - startX) * 2; // scroll-fast
+    menuScrollRef.current.scrollLeft = scrollLeft - walk;
+  };
+
   const isAdmin = user?.email === 'rmourari@ufpi.edu.br';
 
   useEffect(() => {
@@ -122,9 +161,14 @@ export default function App() {
         // Fetch titles definitions once per session
         try {
           const titlesSnap = await getDocs(query(collection(db, 'titles'), orderBy('requirement', 'asc')));
-          setTitlesList(titlesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TitleDefinition)));
+          if (titlesSnap.empty) {
+            setTitlesList(DEFAULT_TITLES);
+          } else {
+            setTitlesList(titlesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TitleDefinition)));
+          }
         } catch (err) {
           console.error("Error fetching titles definitions:", err);
+          setTitlesList(DEFAULT_TITLES);
         }
 
         // Subscribe to user profile in real-time
@@ -207,8 +251,8 @@ export default function App() {
     setCurrentView(View.QUIZ);
   };
 
-  const handleQuizFinished = async (score: number, total: number, missed: any[], categoryStats?: Record<string, { correct: number, total: number }>) => {
-    setLastResults({ score, total, missed, tag: activeQuiz?.tag, title: activeQuiz?.title });
+  const handleQuizFinished = async (score: number, total: number, missed: any[], categoryStats?: Record<string, { correct: number, total: number }>, timeElapsed?: number) => {
+    setLastResults({ score, total, missed, tag: activeQuiz?.tag, title: activeQuiz?.title, timeElapsed });
     setCurrentView(View.RESULTS);
 
     if (auth.currentUser && userData) {
@@ -294,8 +338,9 @@ export default function App() {
 
           const earned = userData.earnedTitles || [];
           let newlyEarned = false;
+          const activeList = titlesList.length > 0 ? titlesList : DEFAULT_TITLES;
           
-          titlesList.forEach(t => {
+          activeList.forEach(t => {
             let val = 0;
             switch(t.criteria) {
               case 'total_questions': val = latestStats.questionsAnswered; break;
@@ -315,9 +360,10 @@ export default function App() {
             }
           });
           
-          if (newlyEarned) {
-             await updateDoc(userRef, { earnedTitles: earned });
-             setUserData({ ...userData, earnedTitles: earned });
+          if (newlyEarned || (!userData.title && earned.length > 0)) {
+            const currentTitle = earned[earned.length - 1] || 'Estudante de Medicina';
+            await updateDoc(userRef, { earnedTitles: earned, title: currentTitle });
+            setUserData({ ...userData, earnedTitles: earned, title: currentTitle });
           }
 
       } else {
@@ -334,7 +380,8 @@ export default function App() {
             dailyGoalsMet: total >= 50 ? 1 : 0,
             weeklyGoalsMet: total >= 300 ? 1 : 0,
             responses_total: 1,
-            saves_total: 0
+            saves_total: 0,
+            categoryStats: categoryStats || {}
           };
           await setDoc(statsRef, statsData);
 
@@ -444,7 +491,14 @@ export default function App() {
           transition={{ duration: 0.3, ease: "easeInOut" }}
           className="w-full max-w-6xl mx-auto"
         >
-          <div className="flex items-center overflow-x-auto justify-center gap-2 lg:gap-8 py-3 w-full touch-pan-x [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+          <div 
+            ref={menuScrollRef}
+            onMouseDown={handleMouseDown}
+            onMouseLeave={handleMouseLeave}
+            onMouseUp={handleMouseUp}
+            onMouseMove={handleMouseMove}
+            className="flex items-center overflow-x-auto justify-start sm:justify-center gap-2 lg:gap-8 py-3 px-4 w-full touch-pan-x select-none cursor-grab active:cursor-grabbing [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
+          >
             <div className="w-4 lg:w-6 shrink-0" aria-hidden="true" />
             <NavButton
               active={currentView === View.DASHBOARD}
@@ -569,11 +623,12 @@ export default function App() {
       </div>
 
       {/* Main Content */}
-      <main className="max-w-4xl mx-auto pt-6 pb-12 px-6">
+      <main className="w-full max-w-4xl mx-auto pt-6 pb-12 px-6">
         <AnimatePresence mode="wait">
           {currentView === View.DASHBOARD && (
             <motion.div
               key="dashboard"
+              className="w-full"
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
@@ -586,6 +641,7 @@ export default function App() {
           {currentView === View.BANK && (
             <motion.div
               key="bank"
+              className="w-full"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
@@ -597,6 +653,7 @@ export default function App() {
           {currentView === View.LANDING && (
             <motion.div
               key="landing"
+              className="w-full"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
@@ -609,6 +666,7 @@ export default function App() {
           {currentView === View.REVIEW && activeQuiz && (
             <motion.div
               key="review"
+              className="w-full"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
@@ -621,6 +679,7 @@ export default function App() {
           {currentView === View.QUIZ && activeQuiz && (
             <motion.div
               key="quiz"
+              className="w-full"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
@@ -633,6 +692,7 @@ export default function App() {
           {currentView === View.RESULTS && lastResults && (
             <motion.div
               key="results"
+              className="w-full"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
@@ -649,18 +709,25 @@ export default function App() {
           {currentView === View.COMMUNITY && (
             <motion.div
               key="community"
+              className="w-full"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.3 }}
             >
-              <CommunityView />
+              <CommunityView 
+                onSelectQuiz={(q) => {
+                  setActiveQuiz(q);
+                  setCurrentView(View.QUIZ);
+                }}
+              />
             </motion.div>
           )}
 
           {currentView === View.FLASHCARDS && (
             <motion.div
               key="flashcards"
+              className="w-full"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
@@ -673,6 +740,7 @@ export default function App() {
           {currentView === View.ADMIN && isAdmin && (
             <motion.div
               key="admin"
+              className="w-full"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}

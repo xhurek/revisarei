@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Check, ChevronRight, AlertCircle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { addDoc, collection } from 'firebase/firestore';
+import { addDoc, collection, doc, updateDoc } from 'firebase/firestore';
 
 interface ReviewQuizProps {
   quiz: Quiz;
@@ -28,12 +28,20 @@ export function ReviewQuiz({ quiz, onConfirm }: ReviewQuizProps) {
     setSaving(true);
     try {
       if (auth.currentUser) {
-        const docRef = await addDoc(collection(db, 'quizzes'), {
-           ...editedQuiz,
-           userId: auth.currentUser.uid,
-           createdAt: new Date().toISOString()
-        });
-        onConfirm({ ...editedQuiz, id: docRef.id });
+        if (editedQuiz.id) {
+          await updateDoc(doc(db, 'quizzes', editedQuiz.id), {
+            ...editedQuiz,
+            updatedAt: new Date().toISOString()
+          });
+          onConfirm(editedQuiz);
+        } else {
+          const docRef = await addDoc(collection(db, 'quizzes'), {
+             ...editedQuiz,
+             userId: auth.currentUser.uid,
+             createdAt: new Date().toISOString()
+          });
+          onConfirm({ ...editedQuiz, id: docRef.id });
+        }
      } else {
         onConfirm(editedQuiz);
      }
@@ -46,7 +54,7 @@ export function ReviewQuiz({ quiz, onConfirm }: ReviewQuizProps) {
   };
 
   return (
-    <div className="space-y-8 max-w-3xl mx-auto">
+    <div className="space-y-8 max-w-4xl mx-auto">
       <div className="flex flex-col gap-2">
         <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">Revisar Caderno</h2>
         <h1 className="text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4">{editedQuiz.title || "Caderno"}</h1>

@@ -53,7 +53,10 @@ service cloud.firestore {
              data.userId == request.auth.uid &&
              data.questions is list && data.questions.size() <= 300 &&
              (!data.keys().contains('isPublic') || data.isPublic is bool) &&
-             (!data.keys().contains('tag') || data.tag is string && data.tag.size() <= 100);
+             (!data.keys().contains('tag') || data.tag is string && data.tag.size() <= 100) &&
+             (!data.keys().contains('mainTag') || data.mainTag is string) &&
+             (!data.keys().contains('subtags') || data.subtags is list) &&
+             (!data.keys().contains('likes') || data.likes is list);
     }
 
     function isValidComment(data) {
@@ -64,7 +67,9 @@ service cloud.firestore {
              data.text is string && data.text.size() <= 1000 &&
              data.userId == request.auth.uid &&
              data.userName is string && data.userName.size() <= 100 &&
-             data.createdAt is string;
+             data.createdAt is string &&
+             (!data.keys().contains('userTitle') || data.userTitle is string) &&
+             (!data.keys().contains('likes') || data.likes is list);
     }
 
     function isValidNotification(data) {
@@ -109,13 +114,20 @@ service cloud.firestore {
       allow list: if isAuthorized() && (resource.data.userId == request.auth.uid || resource.data.isPublic == true || isAdmin());
       allow create: if (isAuthorized() && isValidQuiz(incoming())) || isAdmin();
       allow delete: if (isAuthorized() && resource.data.userId == request.auth.uid) || isAdmin();
-      allow update: if (isAuthorized() && resource.data.userId == request.auth.uid && isValidQuiz(incoming())) || isAdmin();
+      allow update: if (isAuthorized() && (
+                        (resource.data.userId == request.auth.uid && isValidQuiz(incoming())) ||
+                        (resource.data.isPublic == true && incoming().diff(existing()).affectedKeys().hasOnly(['likes']))
+                      )) || isAdmin();
     }
 
     // 4. Comments
     match /comments/{commentId} {
       allow read: if isAuthorized();
       allow create: if isAuthorized() && isValidComment(incoming());
+      allow update: if (isAuthorized() && (
+                        existing().userId == request.auth.uid ||
+                        incoming().diff(existing()).affectedKeys().hasOnly(['likes'])
+                      )) || isAdmin();
       allow delete: if (isAuthorized() && existing().userId == request.auth.uid) || isAdmin();
     }
 

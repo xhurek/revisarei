@@ -1,12 +1,14 @@
-import { apiFetch } from "../lib/firebase";
+import { apiFetch, parseJsonResponse } from "../lib/firebase";
 import React, { useState, useEffect } from 'react';
 import { Quiz, Question, UserProfile } from '../types';
+import { getMainArea } from '../lib/categories';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronRight, ChevronLeft, CheckCircle2, XCircle, ArrowLeft, Trophy, Brain, User as UserIcon } from 'lucide-react';
+import { ChevronRight, ChevronLeft, CheckCircle2, XCircle, ArrowLeft, Trophy, Brain, User as UserIcon, Clock, Eye, EyeOff, Heart } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
-import { collection, query, where, getDocs, addDoc, orderBy } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, orderBy, doc, updateDoc, setDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { UserTitleBadge } from './UserTitleBadge';
 
 function isUserAnswerCorrect(userAns: string, correctAns: string, options?: string[]): boolean {
   if (!userAns || !correctAns) return false;
@@ -202,7 +204,7 @@ function SimpleMarkdown({ text }: { text: string }) {
 interface QuizRoomProps {
   quiz: Quiz;
   userData: UserProfile | null;
-  onFinish: (score: number, total: number, missed: any[], categoryStats?: Record<string, { correct: number, total: number }>) => void;
+  onFinish: (score: number, total: number, missed: any[], categoryStats?: Record<string, { correct: number, total: number }>, timeElapsed?: number) => void;
   onCancel: () => void;
 }
 
@@ -211,6 +213,27 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
   const [answers, setAnswers] = useState<{ [key: string]: string }>({});
   const [revealed, setRevealed] = useState<{ [key: string]: boolean }>({});
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  
+  // Timer state
+  const [secondsElapsed, setSecondsElapsed] = useState(0);
+  const [showTimer, setShowTimer] = useState(true);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSecondsElapsed(prev => prev + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatTimer = (totalSeconds: number) => {
+    const hrs = Math.floor(totalSeconds / 3600);
+    const mins = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+    if (hrs > 0) {
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
   
   // For discursive questions
   const [discursiveText, setDiscursiveText] = useState('');
@@ -267,7 +290,8 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
         userId: auth.currentUser.uid,
         userName: auth.currentUser.displayName || 'Usuário',
         userPhoto: auth.currentUser.photoURL || '',
-        userTitle: (userData as any)?.title || '',
+        userTitle: (userData as any)?.title || 'Estudante de Medicina',
+        likes: [],
         createdAt: new Date().toISOString()
       };
       try {
@@ -275,11 +299,10 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
         setComments(prev => [...prev, { ...commentData, id: docRef.id }]);
         setNewComment('');
         
-        // We could ideally trigger a notification creation here for the quiz owner
         if (quiz.userId && quiz.userId !== auth.currentUser.uid) {
            try {
              await addDoc(collection(db, 'notifications'), {
-               userId: quiz.userId, // quiz owner
+               userId: quiz.userId,
                type: 'comment',
                quiz: quiz,
                message: `${auth.currentUser.displayName || 'Usuário'} comentou: "${newComment.substring(0, 30)}..." na sua questão pública.`,
@@ -298,6 +321,32 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
       }
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const handleToggleLikeComment = async (commentId: string, currentLikes: string[] = []) => {
+    if (!auth.currentUser) {
+      alert('Faça login para curtir comentários!');
+      return;
+    }
+    const uid = auth.currentUser.uid;
+    const isLiked = currentLikes.includes(uid);
+
+    setComments(prev => prev.map(c => {
+      if (c.id !== commentId) return c;
+      const newLikes = isLiked
+        ? (c.likes || []).filter((id: string) => id !== uid)
+        : [...(c.likes || []), uid];
+      return { ...c, likes: newLikes };
+    }));
+
+    try {
+      const commentRef = doc(db, 'comments', commentId);
+      await setDoc(commentRef, {
+        likes: isLiked ? arrayRemove(uid) : arrayUnion(uid)
+      }, { merge: true });
+    } catch (err) {
+      console.error("Error toggling comment like:", err);
     }
   };
 
@@ -379,12 +428,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
         })
       });
       
-      if (!response.ok) {
-         const errText = await response.text();
-         throw new Error(`Server error: ${response.status} ${errText.substring(0, 100)}`);
-      }
-      
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
       setDiscursiveFeedback(prev => ({ ...prev, [currentQuestion.id]: data }));
       setAnswers(prev => ({ ...prev, [currentQuestion.id]: discursiveText }));
       setRevealed(prev => ({ ...prev, [currentQuestion.id]: true }));
@@ -395,6 +439,76 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     }
   };
 
+  const finishQuizAndSaveProgress = () => {
+    let score = 0;
+    const missed: any[] = [];
+    const categoryStats: Record<string, { correct: number, total: number }> = {};
+    let totalAnsweredCount = 0;
+
+    quiz.questions.forEach(q => {
+      const wasAnswered = revealed[q.id] || answers[q.id] !== undefined;
+      if (!wasAnswered) return;
+
+      totalAnsweredCount++;
+
+      const rawTag = (q as any).mainTag || (q as any).tag || q.category || quiz.mainTag || quiz.tag || 'Outros';
+      const subtagToUse = (q as any).subtag || ((q as any).subtags && (q as any).subtags[0]) || '';
+      const mainCat = getMainArea(rawTag);
+
+      if (!categoryStats[mainCat]) categoryStats[mainCat] = { correct: 0, total: 0 };
+      categoryStats[mainCat].total += 1;
+
+      if (rawTag !== mainCat) {
+        if (!categoryStats[rawTag]) categoryStats[rawTag] = { correct: 0, total: 0 };
+        categoryStats[rawTag].total += 1;
+      }
+
+      if (q.type === 'discursive') {
+        const evalData = discursiveFeedback[q.id];
+        if (evalData) {
+          score += evalData.score;
+          if (evalData.score >= 1.0) {
+            categoryStats[mainCat].correct += 1;
+            if (rawTag !== mainCat) categoryStats[rawTag].correct += 1;
+          } else {
+            missed.push({
+              question: q.text,
+              answer: q.correctAnswer,
+              explanation: evalData.feedback || q.explanation,
+              userAnswer: answers[q.id],
+              tag: rawTag,
+              subtag: subtagToUse,
+              subtags: (q as any).subtags || (subtagToUse ? [subtagToUse] : [])
+            });
+          }
+        }
+      } else {
+        if (isUserAnswerCorrect(answers[q.id], q.correctAnswer, q.options)) {
+          score++;
+          categoryStats[mainCat].correct += 1;
+          if (rawTag !== mainCat) categoryStats[rawTag].correct += 1;
+        } else {
+          missed.push({
+            question: q.text,
+            answer: q.correctAnswer,
+            explanation: q.explanation,
+            userAnswer: answers[q.id],
+            tag: rawTag,
+            subtag: subtagToUse,
+            subtags: (q as any).subtags || (subtagToUse ? [subtagToUse] : [])
+          });
+        }
+      }
+    });
+
+    if (totalAnsweredCount === 0) {
+      onCancel();
+      return;
+    }
+
+    onFinish(score, totalAnsweredCount, missed, categoryStats, secondsElapsed);
+  };
+
   const handleNext = () => {
     setDiscursiveText('');
     setSelectedOption(null);
@@ -402,62 +516,53 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     if (currentIndex < quiz.questions.length - 1) {
       setCurrentIndex(currentIndex + 1);
     } else {
-      // Calculate results
-      let score = 0;
-      const missed: any[] = [];
-      const categoryStats: Record<string, { correct: number, total: number }> = {};
+      finishQuizAndSaveProgress();
+    }
+  };
 
-      quiz.questions.forEach(q => {
-        const cat = q.category || quiz.mainTag || 'Outros';
-        if (!categoryStats[cat]) categoryStats[cat] = { correct: 0, total: 0 };
-        categoryStats[cat].total += 1;
+  const handleAbandon = () => {
+    const answeredCount = Object.keys(answers).length;
+    if (answeredCount === 0) {
+      onCancel();
+      return;
+    }
 
-        if (q.type === 'discursive') {
-          const evalData = discursiveFeedback[q.id];
-          if (evalData) {
-            score += evalData.score;
-            if (evalData.score >= 1.0) {
-              categoryStats[cat].correct += 1;
-            } else {
-              missed.push({
-                question: q.text,
-                answer: q.correctAnswer,
-                explanation: evalData.feedback,
-                userAnswer: answers[q.id]
-              });
-            }
-          }
-        } else {
-          if (isUserAnswerCorrect(answers[q.id], q.correctAnswer, q.options)) {
-            score++;
-            categoryStats[cat].correct += 1;
-          } else {
-            missed.push({
-              question: q.text,
-              answer: q.correctAnswer,
-              explanation: q.explanation,
-              userAnswer: answers[q.id]
-            });
-          }
-        }
-      });
-      onFinish(score, quiz.questions.length, missed, categoryStats);
+    if (window.confirm(`Você respondeu ${answeredCount} questão(ões). Deseja encerrar e contabilizar as questões feitas no seu nível?`)) {
+      finishQuizAndSaveProgress();
+    } else {
+      onCancel();
     }
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 max-w-4xl mx-auto">
       {/* Quiz Header */}
       <div className="flex items-center justify-between">
         <button 
-          onClick={onCancel}
+          onClick={handleAbandon}
           className="flex items-center gap-2 text-sm font-bold text-slate-400 hover:text-indigo-600 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
           Abandonar
         </button>
-        <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-          Questão <span className="text-indigo-600">{currentIndex + 1}</span> / {quiz.questions.length}
+
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold">
+            <Clock className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+            <span className="font-mono text-xs tracking-tight">{showTimer ? formatTimer(secondsElapsed) : '••:••'}</span>
+            <button
+              type="button"
+              onClick={() => setShowTimer(!showTimer)}
+              className="text-slate-400 hover:text-indigo-600 transition-colors ml-0.5 p-0.5 rounded"
+              title={showTimer ? "Ocultar tempo" : "Mostrar tempo"}
+            >
+              {showTimer ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+
+          <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+            Questão <span className="text-indigo-600">{currentIndex + 1}</span> / {quiz.questions.length}
+          </div>
         </div>
       </div>
 
@@ -713,33 +818,49 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
                     {comments.length === 0 ? (
                       <p className="text-xs text-slate-400 font-medium">Os comentários aparecerão aqui. Seja o primeiro a comentar!</p>
                     ) : (
-                      comments.map(c => (
-                        <div key={c.id} className="flex gap-3 animate-in fade-in slide-in-from-top-1 duration-300">
-                          <div className="w-10 h-10 bg-slate-100 rounded-full overflow-hidden shrink-0 shadow-sm border border-white">
-                            {c.userPhoto ? (
-                              <img src={c.userPhoto} alt={c.userName} className="w-full h-full object-cover" />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center text-slate-400">
-                                <UserIcon className="w-5 h-5" />
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex-1 space-y-1">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <span className="text-sm font-bold text-slate-900 leading-none">{c.userName}</span>
-                              {c.userTitle && (
-                                <span className="bg-indigo-50 text-indigo-600 text-[9px] font-black uppercase tracking-tighter px-1.5 py-0.5 rounded-full border border-indigo-100">
-                                  {c.userTitle}
-                                </span>
+                      comments.map(c => {
+                        const likesArr = Array.isArray(c.likes) ? c.likes : [];
+                        const isLikedByMe = auth.currentUser ? likesArr.includes(auth.currentUser.uid) : false;
+
+                        return (
+                          <div key={c.id} className="flex gap-3 animate-in fade-in slide-in-from-top-1 duration-300">
+                            <div className="w-10 h-10 bg-slate-100 rounded-full overflow-hidden shrink-0 shadow-sm border border-white">
+                              {c.userPhoto ? (
+                                <img src={c.userPhoto} alt={c.userName} className="w-full h-full object-cover" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-slate-400">
+                                  <UserIcon className="w-5 h-5" />
+                                </div>
                               )}
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{new Date(c.createdAt).toLocaleDateString()}</span>
                             </div>
-                            <div className="bg-slate-50 p-3 rounded-2xl rounded-tl-none border border-slate-100 shadow-sm">
-                              <p className="text-sm text-slate-700 leading-relaxed">{c.text}</p>
+                            <div className="flex-1 space-y-1">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <span className="text-sm font-bold text-slate-900 leading-none">{c.userName}</span>
+                                {c.userTitle && (
+                                  <UserTitleBadge title={c.userTitle} />
+                                )}
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{new Date(c.createdAt).toLocaleDateString()}</span>
+                              </div>
+                              <div className="bg-slate-50 p-3 rounded-2xl rounded-tl-none border border-slate-100 shadow-sm flex items-start justify-between gap-3">
+                                <p className="text-sm text-slate-700 leading-relaxed flex-1">{c.text}</p>
+                                <button
+                                  onClick={() => handleToggleLikeComment(c.id, likesArr)}
+                                  className={cn(
+                                    "flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full border transition-all shrink-0 mt-0.5 cursor-pointer",
+                                    isLikedByMe 
+                                      ? "bg-rose-50 text-rose-600 border-rose-200 hover:bg-rose-100" 
+                                      : "bg-white text-slate-500 border-slate-200 hover:border-slate-300 hover:text-slate-700"
+                                  )}
+                                  title={isLikedByMe ? "Descurtir" : "Curtir comentário"}
+                                >
+                                  <Heart className={cn("w-3.5 h-3.5", isLikedByMe ? "fill-rose-500 text-rose-500" : "text-slate-400")} />
+                                  <span>{likesArr.length}</span>
+                                </button>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
