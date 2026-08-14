@@ -2,29 +2,33 @@ import { apiFetch, parseJsonResponse } from "../lib/firebase";
 import React, { useState, useRef } from 'react';
 import { UploadCloud, Check, Save, FileText, Loader2, Play, Square, AlertTriangle } from 'lucide-react';
 import { BankQuestion } from '../types';
+import { sanitizeQuestionFields } from '../lib/textSanitizer';
 
 
 
 export function AdvancedPdfBatchImport({ 
   onQuestionsExtracted, 
   existingQuestions,
-  availableTags
+  availableTags,
+  institution,
+  year,
+  mainTag,
+  batchSubtags
 }: { 
   onQuestionsExtracted: (questions: BankQuestion[]) => void,
   existingQuestions: BankQuestion[],
-  availableTags: { id: string, name: string, subtags: string[] }[]
+  availableTags: { id: string, name: string, subtags: string[] }[],
+  institution: string,
+  year: string,
+  mainTag: string,
+  batchSubtags: string[]
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState('');
   const [totalQuestions, setTotalQuestions] = useState<number>(0);
-  const [institution, setInstitution] = useState('');
-  const [year, setYear] = useState('');
-  const [mainTag, setMainTag] = useState('Clínica Médica');
-  const [batchSubtags, setBatchSubtags] = useState<string[]>([]);
-  const [subtagInput, setSubtagInput] = useState('');
-  const [shouldStop, setShouldStop] = useState(false);
+            const [shouldStop, setShouldStop] = useState(false);
   const shouldStopRef = useRef(false);
   
   // Stats
@@ -155,7 +159,7 @@ export function AdvancedPdfBatchImport({
            const qNumStr = q.numero ? String(q.numero) : undefined;
            const imageNeeded = checkHasImage(q);
            
-           const newQ: BankQuestion = {
+           const newQ: BankQuestion = sanitizeQuestionFields({
               id: Math.random().toString(36).substring(2, 9),
               type: 'multiple_choice',
               text: q.enunciado || '',
@@ -169,7 +173,7 @@ export function AdvancedPdfBatchImport({
               hasImageWarning: imageNeeded,
               createdAt: new Date().toISOString(),
               createdBy: 'API_BATCH'
-           };
+           });
 
            // Checar duplicata
            const qNorm = normalizeText(newQ.text);
@@ -259,86 +263,6 @@ export function AdvancedPdfBatchImport({
                 disabled={isProcessing}
               />
             </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Instituição (Opcional)</label>
-              <input 
-                type="text" 
-                value={institution}
-                onChange={e => setInstitution(e.target.value)}
-                placeholder="Ex: USP, SUS-SP..."
-                className="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm outline-none focus:border-indigo-500"
-                disabled={isProcessing}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Ano (Opcional)</label>
-              <input 
-                type="text" 
-                value={year}
-                onChange={e => setYear(e.target.value)}
-                placeholder="Ex: 2024"
-                className="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm outline-none focus:border-indigo-500"
-                disabled={isProcessing}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Tag Principal</label>
-              <select 
-                value={mainTag} 
-                onChange={e => setMainTag(e.target.value)} 
-                className="w-full bg-white border border-slate-200 rounded-lg p-2 text-sm outline-none focus:border-indigo-500"
-                disabled={isProcessing}
-              >
-                {availableTags.map(t => (
-                  <option key={t.id} value={t.name}>{t.name}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Subtags (Digite e pressione enter ou vírgula)</label>
-              <div className="flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded-lg p-2">
-                {batchSubtags.map(sub => (
-                  <span key={sub} className="bg-indigo-100 text-indigo-700 text-xs font-bold px-2 py-1 rounded-md flex items-center gap-1">
-                    {sub}
-                    <button type="button" onClick={() => setBatchSubtags(batchSubtags.filter(s => s !== sub))} className="hover:text-rose-600 transition">
-                      &times;
-                    </button>
-                  </span>
-                ))}
-                <input 
-                  type="text" 
-                  value={subtagInput}
-                  onChange={e => setSubtagInput(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' || e.key === ',') {
-                      e.preventDefault();
-                      const val = subtagInput.trim().replace(/,$/, '').trim();
-                      if (val && !batchSubtags.includes(val)) {
-                        setBatchSubtags([...batchSubtags, val]);
-                        setSubtagInput('');
-                      }
-                    }
-                  }}
-                  onBlur={() => {
-                      const val = subtagInput.trim().replace(/,$/, '').trim();
-                      if (val && !batchSubtags.includes(val)) {
-                        setBatchSubtags([...batchSubtags, val]);
-                        setSubtagInput('');
-                      }
-                  }}
-                  placeholder="Nova subtag..."
-                  className="flex-1 bg-transparent text-sm outline-none min-w-[100px]"
-                  disabled={isProcessing}
-                  list="batch-subtags-datalist"
-                />
-                <datalist id="batch-subtags-datalist">
-                  {availableTags.find(t => t.name === mainTag)?.subtags.map(sub => (
-                    <option key={sub} value={sub} />
-                  ))}
-                </datalist>
-              </div>
-            </div>
-
           </div>
 
           {isProcessing ? (

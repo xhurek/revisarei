@@ -44,6 +44,7 @@ export interface Question {
   options?: string[];
   explanation?: string;
   category?: string;
+  images?: string[];
 }
 
 export interface BankQuestion extends Question {
@@ -71,6 +72,7 @@ export interface Quiz {
   likes?: string[];
   knowledgeBase?: any[];
   questions: Question[];
+  progress?: any;
   createdAt?: string;
   createdBy?: string;
 }
@@ -89,6 +91,7 @@ export interface Flashcard {
   answer: string;
   explanation: string;
   tag?: string;
+  subtag?: string;
   nextReview: string;
   interval: number;
   easeFactor: number;

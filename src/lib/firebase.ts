@@ -69,7 +69,9 @@ export async function parseJsonResponse<T = any>(res: Response): Promise<T> {
       const text = await res.text();
       const cleanText = text.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
       if (cleanText.includes('Cookie check')) {
-        errorMessage = 'Restrição de iFrame: Por favor, abra o app em uma nova guia para fazer o upload.';
+        errorMessage = 'Restrição de iFrame: Por favor, abra o app em uma nova guia para realizar esta ação.';
+      } else if (cleanText.includes('Starting Server') || cleanText.includes('color-scheme')) {
+        errorMessage = 'O servidor está inicializando. Por favor, aguarde alguns segundos e tente novamente.';
       } else {
         errorMessage = cleanText ? `Erro ${res.status}: ${cleanText.substring(0, 120)}` : `Erro ${res.status}`;
       }
@@ -82,6 +84,9 @@ export async function parseJsonResponse<T = any>(res: Response): Promise<T> {
     const cleanText = text.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
     if (cleanText.includes('Cookie check')) {
       throw new Error(`O upload falhou devido a restrições do navegador. Por favor, abra o aplicativo em uma nova guia (botão no canto superior direito) para fazer envios de arquivos.`);
+    }
+    if (cleanText.includes('Starting Server') || cleanText.includes('color-scheme')) {
+      throw new Error(`O servidor está inicializando. Por favor, aguarde alguns segundos e tente novamente.`);
     }
     throw new Error(`Resposta do servidor inválida (${cleanText.substring(0, 100)})`);
   }

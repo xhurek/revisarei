@@ -218,7 +218,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
         type: q.type || 'multiple_choice',
         text: q.text,
         options: q.options,
-        correctAnswer: q.answer,
+        correctAnswer: q.correctAnswer || q.answer || '',
         explanation: q.explanation || '',
         category: quizMainTag.trim(),
         images: q.images || [],
@@ -521,10 +521,10 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
                      type: q.type || 'multiple_choice',
                      text: q.text,
                      options: q.options,
-                     correctAnswer: q.correctAnswer || '',
+                     correctAnswer: q.correctAnswer || q.answer || '',
                      explanation: q.explanation || '',
                      category: quizMainTag.trim(),
-                     images: q.images || [],
+                     images: q.images || (q.image ? [q.image] : []),
                      answerImages: q.answerImages || [],
                      explanationImages: q.explanationImages || []
                    }));
@@ -723,7 +723,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
 
       {/* Edit Quiz Modal */}
       {editingQuiz && (
-        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed top-0 left-0 w-full h-[100dvh] bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
             <div className="p-6">
               <h2 className="text-xl font-bold text-slate-900 mb-6 font-sans">Editar Caderno</h2>
@@ -828,7 +828,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
 
       {/* Delete Quiz Modal */}
       {deletingQuiz && (
-        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed top-0 left-0 w-full h-[100dvh] bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden text-center">
             <div className="p-6">
               <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -860,7 +860,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
 
       {/* Edit Folder Modal */}
       {editingFolder && (
-        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed top-0 left-0 w-full h-[100dvh] bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
             <div className="p-6">
               <h2 className="text-xl font-bold text-slate-900 mb-6 font-sans">Editar Nome da Pasta</h2>
@@ -889,7 +889,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
 
       {/* Delete Folder Modal */}
       {deletingFolder && (
-        <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4">
+        <div className="fixed top-0 left-0 w-full h-[100dvh] bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden text-center">
             <div className="p-6">
               <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">

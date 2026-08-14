@@ -5,13 +5,14 @@ import {
   HelpCircle, Settings, Sliders, Image as ImageIcon, Type, CornerDownLeft, Plus
 } from 'lucide-react';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { collection, addDoc } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, doc } from 'firebase/firestore';
 import { db, auth, storage, handleFirestoreError, OperationType } from '../lib/firebase';
 import { Flashcard } from '../types';
 import { AttachedImage, ImageOcclusionEditor } from './ImageOcclusionEditor';
 import { v4 as uuidv4 } from 'uuid';
 
 interface FlashcardCreatorProps {
+  editingCard?: Flashcard;
   onClose: () => void;
   onCardSaved: () => void;
   existingDecks: string[];
@@ -26,13 +27,13 @@ interface EditorState {
   backImages: AttachedImage[];
 }
 
-export function FlashcardCreator({ onClose, onCardSaved, existingDecks }: FlashcardCreatorProps) {
-  const [deck, setDeck] = useState('');
-  const [subtag, setSubtag] = useState('');
+export function FlashcardCreator({ onClose, onCardSaved, existingDecks, editingCard }: FlashcardCreatorProps) {
+  const [deck, setDeck] = useState(editingCard?.tag || '');
+  const [subtag, setSubtag] = useState(editingCard?.subtag || '');
 
-  const [front, setFront] = useState('');
-  const [back, setBack] = useState('');
-  const [explanation, setExplanation] = useState('');
+  const [front, setFront] = useState(editingCard?.question || '');
+  const [back, setBack] = useState(editingCard?.answer || '');
+  const [explanation, setExplanation] = useState(editingCard?.explanation || '');
   
   // States for Front/Back Multiple Image Attachments
   const [frontImages, setFrontImages] = useState<AttachedImage[]>([]);

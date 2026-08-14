@@ -208,7 +208,8 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
             easeFactor: 2.5,
             userId: auth.currentUser!.uid,
             createdAt: new Date().toISOString(),
-            tag: info.topic || results.tag || 'Geral'
+            tag: results.title || info.topic || results.tag || 'Caderno de Erros',
+            subtag: 'Erros'
           });
         } catch (e) {
           // Fallback to basic extraction if AI fails
@@ -221,7 +222,8 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
             easeFactor: 2.5,
             userId: auth.currentUser!.uid,
             createdAt: new Date().toISOString(),
-            tag: info.topic || results.tag || 'Geral'
+            tag: results.title || info.topic || results.tag || 'Caderno de Erros',
+            subtag: 'Erros'
           });
         }
       });

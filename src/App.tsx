@@ -3,6 +3,7 @@ import { auth, db, signInWithGoogle, testConnection, handleFirestoreError, Opera
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc, updateDoc, setDoc, increment, collection, onSnapshot, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { View, Quiz, UserProfile, TitleDefinition } from './types';
+import { LoginView } from './components/LoginView';
 import { Dashboard } from './components/Dashboard';
 import { QuestionBankView } from './components/QuestionBankView';
 import { QuizzesView } from './components/QuizzesView';
@@ -18,12 +19,14 @@ import { LogOut, BookOpen, Brain, FileText, LayoutDashboard, Tablet, Globe, Bell
 import { cn } from './lib/utils';
 
 export const DEFAULT_TITLES: TitleDefinition[] = [
-  { id: 't1', name: 'Estudante de Medicina', requirement: 0, criteria: 'total_questions', icon: 'GraduationCap', color: 'bg-blue-50|text-blue-600|border-blue-100' },
-  { id: 't2', name: 'Interno de Medicina', requirement: 50, criteria: 'total_questions', icon: 'Brain', color: 'bg-indigo-50|text-indigo-600|border-indigo-100' },
-  { id: 't3', name: 'Residente Especialista', requirement: 150, criteria: 'total_questions', icon: 'Target', color: 'bg-violet-50|text-violet-600|border-violet-100' },
-  { id: 't4', name: 'Preceptor Clínico', requirement: 300, criteria: 'total_questions', icon: 'Award', color: 'bg-emerald-50|text-emerald-600|border-emerald-100' },
-  { id: 't5', name: 'Mestre da Medicina', requirement: 500, criteria: 'total_questions', icon: 'Star', color: 'bg-amber-50|text-amber-600|border-amber-100' },
-  { id: 't6', name: 'Lenda Médica', requirement: 1000, criteria: 'total_questions', icon: 'Trophy', color: 'bg-rose-50|text-rose-600|border-rose-100' }
+  { id: 't1', name: 'Calouro', requirement: 0, criteria: 'total_questions', icon: 'User', color: 'bg-slate-50|text-slate-600|border-slate-200' },
+  { id: 't2', name: 'Café-com-leite', requirement: 250, criteria: 'total_questions', icon: 'Sparkles', color: 'bg-orange-50|text-orange-600|border-orange-100' },
+  { id: 't3', name: 'Aprendiz', requirement: 500, criteria: 'total_questions', icon: 'GraduationCap', color: 'bg-emerald-50|text-emerald-600|border-emerald-100' },
+  { id: 't4', name: 'Estudante', requirement: 1000, criteria: 'total_questions', icon: 'Brain', color: 'bg-blue-50|text-blue-600|border-blue-100' },
+  { id: 't5', name: 'Interno de Plantão', requirement: 2000, criteria: 'total_questions', icon: 'Stethoscope', color: 'bg-indigo-50|text-indigo-600|border-indigo-100' },
+  { id: 't6', name: 'Sabe muito', requirement: 4000, criteria: 'total_questions', icon: 'Flame', color: 'bg-rose-50|text-rose-600|border-rose-100' },
+  { id: 't7', name: 'Lenda', requirement: 7000, criteria: 'total_questions', icon: 'Trophy', color: 'bg-amber-50|text-amber-600|border-amber-100' },
+  { id: 't8', name: 'Gênio', requirement: 10000, criteria: 'total_questions', icon: 'Zap', color: 'bg-violet-50|text-violet-600|border-violet-100' }
 ];
 
 export default function App() {
@@ -181,8 +184,12 @@ export default function App() {
             // First time login logic moved outside onSnapshot to avoid loops
             initializeUser(u);
           }
-        }, (err) => {
-          console.error("User profile subscription error:", err);
+        }, (err: any) => {
+          if (err.code === 'permission-denied') {
+            console.warn("User profile subscription closed (permission-denied). This is expected during logout.");
+          } else {
+            console.error("User profile subscription error:", err);
+          }
         });
 
         // Add to cleanups
@@ -200,8 +207,12 @@ export default function App() {
         );
         unsubscribeNotifs = onSnapshot(q, (snapshot) => {
           setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, 'notifications');
+        }, (err: any) => {
+          if (err.code === 'permission-denied') {
+            console.warn("Notifications subscription closed (permission-denied). Expected during logout.");
+          } else {
+            handleFirestoreError(err, OperationType.GET, 'notifications');
+          }
         });
 
       } else {
@@ -262,27 +273,42 @@ export default function App() {
       try {
         const docSnap = await getDoc(statsRef);
         let updatedStats: any = {};
-        let today = new Date().toISOString().split('T')[0];
+        let today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayStr = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+
+        const currentMonday = new Date(today);
+        const day = currentMonday.getDay();
+        const diffToMonday = currentMonday.getDate() - day + (day === 0 ? -6 : 1);
+        currentMonday.setDate(diffToMonday);
+        const currentWeekStr = new Date(currentMonday.getTime() - currentMonday.getTimezoneOffset() * 60000).toISOString().split('T')[0];
         
         if (docSnap.exists()) {
           const s = docSnap.data();
           const lastDate = s.lastActivityDate || '';
-          let dailyCount = lastDate === today ? (s.dailyQuestionCount || 0) : 0;
-          let weeklyCount = (s.weeklyQuestionCount || 0);
           
-          // Reset weekly if last Monday is different? Simplifying: just keep it or reset on specific day
-          // For now, let's keep it simple: if last activity was > 7 days ago, reset.
-          const lastActivity = new Date(lastDate);
-          const now = new Date();
-          const diffDays = Math.floor((now.getTime() - lastActivity.getTime()) / (1000 * 60 * 60 * 24));
+          let dailyCount = lastDate === todayStr ? (s.dailyQuestionCount || 0) : 0;
+          let weeklyCount = 0;
+          if (s.currentWeek === currentWeekStr) {
+            weeklyCount = s.weeklyQuestionCount || 0;
+          } else if (lastDate && lastDate >= currentWeekStr) {
+            weeklyCount = s.weeklyQuestionCount || 0;
+          }
           
-          if (diffDays >= 7) weeklyCount = 0;
-
+          let lastActivity = new Date(0);
+          if (lastDate) {
+            const [y, m, d] = lastDate.split('-');
+            lastActivity = new Date(Number(y), Number(m) - 1, Number(d), 0, 0, 0, 0);
+          }
+          
+          const diffTime = today.getTime() - lastActivity.getTime();
+          const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+          
           const allowedToday = Math.max(0, 50 - dailyCount);
           const progressionToApply = Math.min(total, allowedToday);
           
           let streak = s.streak || 0;
-          if (lastDate !== today) {
+          if (lastDate !== todayStr) {
             if (diffDays === 1) streak += 1;
             else if (diffDays > 1) streak = 1;
           }
@@ -316,7 +342,8 @@ export default function App() {
             questionsCorrect: increment(score),
             dailyQuestionCount: newDailyCount,
             weeklyQuestionCount: newWeeklyCount,
-            lastActivityDate: today,
+            lastActivityDate: todayStr,
+            currentWeek: currentWeekStr,
             streak,
             dailyGoalsMet,
             weeklyGoalsMet,
@@ -332,8 +359,7 @@ export default function App() {
              ...updatedStats,
              questionsAnswered: (s.questionsAnswered || 0) + total,
              progressionQuestions: (s.progressionQuestions || 0) + progressionToApply,
-             questionsCorrect: (s.questionsCorrect || 0) + score,
-             responses_total: responsesTotal
+             questionsCorrect: (s.questionsCorrect || 0) + score
           };
 
           const earned = userData.earnedTitles || [];
@@ -375,7 +401,8 @@ export default function App() {
             flashcardsReviewed: 0,
             dailyQuestionCount: total,
             weeklyQuestionCount: total,
-            lastActivityDate: today,
+            lastActivityDate: todayStr,
+            currentWeek: currentWeekStr,
             streak: 1,
             dailyGoalsMet: total >= 50 ? 1 : 0,
             weeklyGoalsMet: total >= 300 ? 1 : 0,
@@ -431,31 +458,7 @@ export default function App() {
   }
 
   if (!user) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-6 text-center font-sans">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md"
-        >
-          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-indigo-200">
-            <Brain className="text-white w-8 h-8" />
-          </div>
-          <h1 className="text-4xl font-bold tracking-tight text-slate-900 mb-4 font-sans">Revisarei</h1>
-          <p className="text-slate-500 mb-2">
-            Transforme seus PDFs em questionários inteligentes e estude com o método Anki de repetição espaçada.
-          </p>
-          <p className="text-xs text-slate-400 mb-8 font-medium">Nota: O acesso deve ser autorizado por um administrador.</p>
-          <button
-            onClick={signInWithGoogle}
-            className="w-full bg-indigo-600 text-white font-bold py-4 px-6 rounded-xl hover:bg-indigo-700 transition-colors flex items-center justify-center gap-3 shadow-lg shadow-indigo-100"
-          >
-            <img src="https://www.google.com/favicon.ico" className="w-5 h-5 invert" alt="Google" />
-            Entrar com Google
-          </button>
-        </motion.div>
-      </div>
-    );
+    return <LoginView />;
   }
 
   if (userData && !userData.authorized && !isAdmin) {

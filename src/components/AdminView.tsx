@@ -4,9 +4,9 @@ import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, getDocs, doc, updateDoc, deleteDoc, orderBy, where, addDoc } from 'firebase/firestore';
 import { UserProfile, ErrorReport, TitleDefinition, TitleCriteria } from '../types';
 import { 
-  Users, AlertTriangle, CheckCircle, X, Shield, ShieldCheck, Trash2, 
+  User, Stethoscope, Users, AlertTriangle, CheckCircle, X, Shield, ShieldCheck, Trash2, Edit3, 
   Tag as TagIcon, Mail, Clock, Plus, Target, Flame, Calendar, Award, 
-  Zap, Star, Trophy, Sparkles, Brain, Lightbulb, GraduationCap, Upload
+  Zap, Star, Trophy, Sparkles, Brain, Lightbulb, GraduationCap, Upload, RefreshCcw
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -21,7 +21,9 @@ const ICON_OPTIONS = [
   { name: 'Sparkles', icon: <Sparkles className="w-4 h-4" /> },
   { name: 'Brain', icon: <Brain className="w-4 h-4" /> },
   { name: 'Lightbulb', icon: <Lightbulb className="w-4 h-4" /> },
-  { name: 'GraduationCap', icon: <GraduationCap className="w-4 h-4" /> }
+  { name: 'GraduationCap', icon: <GraduationCap className="w-4 h-4" /> },
+  { name: 'User', icon: <User className="w-4 h-4" /> },
+  { name: 'Stethoscope', icon: <Stethoscope className="w-4 h-4" /> }
 ];
 
 const COLOR_OPTIONS = [
@@ -64,6 +66,8 @@ export function AdminView() {
   const [selectedIconName, setSelectedIconName] = useState('Award');
   const [selectedColorIndex, setSelectedColorIndex] = useState(0);
   const [customIconUrl, setCustomIconUrl] = useState('');
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
+  const [titleFormError, setTitleFormError] = useState<string | null>(null);
 
   const fetchAdminData = async () => {
     setLoading(true);
@@ -87,7 +91,36 @@ export function AdminView() {
 
       // Fetch titles
       const titlesSnap = await getDocs(query(collection(db, 'titles'), orderBy('requirement', 'asc')));
-      setTitles(titlesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TitleDefinition)));
+      const rawTitles = titlesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TitleDefinition));
+
+      // De-duplicate by name and clean up duplicates from Firestore if any exist
+      const seenNames = new Set<string>();
+      const uniqueTitlesList: TitleDefinition[] = [];
+      const duplicateIdsToDelete: string[] = [];
+
+      for (const t of rawTitles) {
+        const key = (t.name || '').trim().toLowerCase();
+        if (!key) continue;
+        if (!seenNames.has(key)) {
+          seenNames.add(key);
+          uniqueTitlesList.push(t);
+        } else if (t.id) {
+          duplicateIdsToDelete.push(t.id);
+        }
+      }
+
+      // Automatically clean up duplicate docs from Firestore
+      if (duplicateIdsToDelete.length > 0) {
+        for (const dupId of duplicateIdsToDelete) {
+          try {
+            await deleteDoc(doc(db, 'titles', dupId));
+          } catch (e) {
+            console.warn('Failed to delete duplicate title doc:', dupId, e);
+          }
+        }
+      }
+
+      setTitles(uniqueTitlesList);
 
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, 'admin/data');
@@ -123,10 +156,10 @@ export function AdminView() {
         earnedTitles: updatedEarned
       });
       setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, title: newTitle, earnedTitles: updatedEarned } : u));
-      alert('Título atualizado!');
+      // removed alert
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
-      alert('Erro ao atualizar título.');
+      // removed alert
     }
   };
 
@@ -141,33 +174,121 @@ export function AdminView() {
     }
   };
 
+  
   const handleAddTitleDef = async () => {
-    if (!newTitleName.trim() || newTitleReq < 0) return;
+    setTitleFormError(null);
+    const trimmedName = newTitleName.trim();
+    if (!trimmedName) {
+      setTitleFormError('O nome do título não pode estar em branco.');
+      return;
+    }
+    if (newTitleReq < 0) {
+      setTitleFormError('O requisito deve ser um número maior ou igual a zero.');
+      return;
+    }
+
+    // Check if title with same name already exists
+    const isDuplicate = titles.some(
+      t => t.name.trim().toLowerCase() === trimmedName.toLowerCase() && t.id !== editingTitleId
+    );
+
+    if (isDuplicate) {
+      setTitleFormError(`Já existe uma conquista com o nome "${trimmedName}". Cada título deve ter um nome único.`);
+      return;
+    }
+
     try {
-      const colorObj = COLOR_OPTIONS[selectedColorIndex];
+      const colorObj = COLOR_OPTIONS[selectedColorIndex] || COLOR_OPTIONS[0];
       const colorStr = `${colorObj.bg}|${colorObj.text}|${colorObj.border}`;
       
       const titleData = {
-        name: newTitleName.trim(),
+        name: trimmedName,
         requirement: newTitleReq,
         criteria: newTitleCriteria,
         icon: customIconUrl.trim() || selectedIconName,
         color: colorStr
       };
 
-      const docRef = await addDoc(collection(db, 'titles'), titleData);
-      setTitles(prev => [...prev, { id: docRef.id, ...titleData }].sort((a, b) => a.requirement - b.requirement));
+      if (editingTitleId) {
+        await updateDoc(doc(db, 'titles', editingTitleId), titleData);
+        setTitles(prev => prev.map(t => t.id === editingTitleId ? { id: editingTitleId, ...titleData } : t).sort((a, b) => a.requirement - b.requirement));
+        setEditingTitleId(null);
+      } else {
+        const docRef = await addDoc(collection(db, 'titles'), titleData);
+        setTitles(prev => [...prev, { id: docRef.id, ...titleData }].sort((a, b) => a.requirement - b.requirement));
+      }
       
       setNewTitleName('');
       setNewTitleReq(0);
       setCustomIconUrl('');
+      setSelectedIconName('Award');
+      setSelectedColorIndex(0);
+      setTitleFormError(null);
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'titles');
+      handleFirestoreError(err, editingTitleId ? OperationType.UPDATE : OperationType.CREATE, 'titles');
+    }
+  };
+
+  const handleEditTitleDef = (t: TitleDefinition) => {
+    setTitleFormError(null);
+    setEditingTitleId(t.id || null);
+    setNewTitleName(t.name);
+    setNewTitleReq(t.requirement);
+    setNewTitleCriteria(t.criteria);
+    
+    if (t.icon && t.icon.startsWith('http')) {
+      setCustomIconUrl(t.icon);
+      setSelectedIconName('');
+    } else {
+      setSelectedIconName(t.icon || 'Award');
+      setCustomIconUrl('');
+    }
+
+    if (t.color) {
+      const idx = COLOR_OPTIONS.findIndex(c => t.color!.includes(c.bg));
+      setSelectedColorIndex(idx >= 0 ? idx : 0);
+    } else {
+      setSelectedColorIndex(0);
+    }
+    
+    // Scroll to top or form
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+
+
+  const handleRestoreDefaults = async () => {
+    // removed confirm
+    try {
+      const snap = await getDocs(collection(db, 'titles'));
+      const deletions = snap.docs.map(doc => deleteDoc(doc.ref));
+      await Promise.all(deletions);
+      
+      const defaults = [
+        { name: 'Calouro', requirement: 0, criteria: 'total_questions', icon: 'User', color: 'bg-slate-50|text-slate-600|border-slate-200' },
+        { name: 'Café-com-leite', requirement: 250, criteria: 'total_questions', icon: 'Sparkles', color: 'bg-orange-50|text-orange-600|border-orange-100' },
+        { name: 'Aprendiz', requirement: 500, criteria: 'total_questions', icon: 'GraduationCap', color: 'bg-emerald-50|text-emerald-600|border-emerald-100' },
+        { name: 'Estudante', requirement: 1000, criteria: 'total_questions', icon: 'Brain', color: 'bg-blue-50|text-blue-600|border-blue-100' },
+        { name: 'Interno de Plantão', requirement: 2000, criteria: 'total_questions', icon: 'Stethoscope', color: 'bg-indigo-50|text-indigo-600|border-indigo-100' },
+        { name: 'Sabe muito', requirement: 4000, criteria: 'total_questions', icon: 'Flame', color: 'bg-rose-50|text-rose-600|border-rose-100' },
+        { name: 'Lenda', requirement: 7000, criteria: 'total_questions', icon: 'Trophy', color: 'bg-amber-50|text-amber-600|border-amber-100' },
+        { name: 'Gênio', requirement: 10000, criteria: 'total_questions', icon: 'Zap', color: 'bg-violet-50|text-violet-600|border-violet-100' }
+      ];
+
+      for (const t of defaults) {
+        await addDoc(collection(db, 'titles'), t);
+      }
+      
+      // removed alert
+      await fetchAdminData();
+    } catch (err) {
+      console.error(err);
+      // removed alert
     }
   };
 
   const handleDeleteTitleDef = async (id: string) => {
-    if (!confirm('Excluir esta conquista?')) return;
+    // removed confirm
     try {
       await deleteDoc(doc(db, 'titles', id));
       setTitles(prev => prev.filter(t => t.id !== id));
@@ -177,7 +298,7 @@ export function AdminView() {
   };
 
   const handleDeleteUser = async (userId: string) => {
-    if (!confirm('Tem certeza que deseja remover este usuário?')) return;
+    // removed confirm
     try {
       await deleteDoc(doc(db, 'users', userId));
       setUsers(prev => prev.filter(u => u.uid !== userId));
@@ -318,10 +439,23 @@ export function AdminView() {
           </motion.div>
         ) : activeTab === 'titles' ? (
           <motion.div key="titles" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} className="space-y-6">
+            
+            <div className="flex justify-end mb-4">
+               <button onClick={handleRestoreDefaults} className="text-sm font-bold text-slate-500 hover:text-indigo-600 transition flex items-center gap-2 bg-slate-100 hover:bg-indigo-50 px-4 py-2 rounded-xl">
+                 <RefreshCcw className="w-4 h-4" /> Restaurar Conquistas do Sistema
+               </button>
+            </div>
             <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm space-y-6">
               <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                <Plus className="w-5 h-5 text-indigo-600" /> Nova Conquista
+                {editingTitleId ? <Edit3 className="w-5 h-5 text-amber-600" /> : <Plus className="w-5 h-5 text-indigo-600" />} {editingTitleId ? "Editar Conquista" : "Nova Conquista"}
               </h3>
+
+              {titleFormError && (
+                <div className="p-4 bg-red-50 border border-red-100 rounded-2xl flex items-center gap-3 text-red-600 text-xs font-bold">
+                  <AlertTriangle className="w-5 h-5 shrink-0" />
+                  <span>{titleFormError}</span>
+                </div>
+              )}
 
               <div className="grid md:grid-cols-2 gap-6">
                 <div className="space-y-2">
@@ -393,9 +527,23 @@ export function AdminView() {
                  </div>
               </div>
 
-              <button onClick={handleAddTitleDef} className="w-full bg-slate-900 text-white font-bold py-4 rounded-2xl hover:bg-indigo-600 transition shadow-lg shadow-slate-200">
-                Criar Conquista
-              </button>
+              
+  <div className="flex gap-4">
+    <button onClick={handleAddTitleDef} className="flex-1 bg-slate-900 text-white font-bold py-4 rounded-2xl hover:bg-indigo-600 transition shadow-lg shadow-slate-200">
+      {editingTitleId ? "Salvar Alterações" : "Criar Conquista"}
+    </button>
+    {editingTitleId && (
+      <button onClick={() => {
+        setEditingTitleId(null);
+        setNewTitleName('');
+        setNewTitleReq(0);
+        setCustomIconUrl('');
+      }} className="px-6 bg-white text-slate-500 font-bold py-4 rounded-2xl hover:bg-slate-50 border border-slate-200 transition">
+        Cancelar
+      </button>
+    )}
+  </div>
+  
             </div>
 
             <div className="grid md:grid-cols-2 gap-4">
@@ -414,9 +562,16 @@ export function AdminView() {
                           </p>
                         </div>
                       </div>
-                      <button onClick={() => handleDeleteTitleDef(title.id!)} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
-                        <Trash2 className="w-5 h-5" />
-                      </button>
+                      
+  <div className="flex items-center gap-1">
+    <button onClick={() => handleEditTitleDef(title)} className="p-2 text-slate-300 hover:text-amber-500 transition-colors" title="Editar">
+      <Edit3 className="w-5 h-5" />
+    </button>
+    <button onClick={() => handleDeleteTitleDef(title.id!)} className="p-2 text-slate-300 hover:text-red-500 transition-colors" title="Excluir">
+      <Trash2 className="w-5 h-5" />
+    </button>
+  </div>
+
                     </div>
                   );
               })}

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Quiz, Question } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Check, ChevronRight, AlertCircle } from 'lucide-react';
+import { Check, ChevronRight, AlertCircle, BookOpen } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { addDoc, collection, doc, updateDoc } from 'firebase/firestore';
@@ -68,7 +68,18 @@ export function ReviewQuiz({ quiz, onConfirm }: ReviewQuizProps) {
           <div key={q.id} className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm space-y-6">
              <div className="flex items-start gap-4">
                <span className="text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg shrink-0 mt-0.5">Q{qIndex + 1}</span>
-               <h3 className="text-[17px] font-semibold text-slate-900 leading-snug">{q.text}</h3>
+               <div className="space-y-3 flex-1">
+                 <h3 className="text-[17px] font-semibold text-slate-900 leading-snug">{q.text}</h3>
+                 {((q.images && q.images.length > 0) || (q as any).image) && (
+                   <div className="flex gap-2 overflow-x-auto py-2 bg-slate-50 rounded-xl p-2 border border-slate-200">
+                     {(q.images || [(q as any).image]).map((img: string, imgIdx: number) => (
+                       <div key={imgIdx} className="relative max-h-64 rounded-lg border border-slate-200 overflow-hidden bg-white shrink-0">
+                         <img src={img} alt={`Imagem da questão Q${qIndex + 1}`} className="max-h-64 object-contain" />
+                       </div>
+                     ))}
+                   </div>
+                 )}
+               </div>
              </div>
              
              <div className="flex flex-col gap-3 ml-0 md:ml-12">
@@ -93,7 +104,7 @@ export function ReviewQuiz({ quiz, onConfirm }: ReviewQuizProps) {
                        key={optIndex}
                        onClick={() => handleCorrectAnswerChange(q.id, opt)}
                        className={cn(
-                         "flex items-center gap-4 p-4 rounded-xl border text-left transition-colors group",
+                         "flex items-center gap-4 p-4 rounded-xl border text-left transition-colors group cursor-pointer",
                          isCorrect ? "border-2 border-green-500 bg-green-50 text-green-900 font-medium" : "border-slate-200 hover:border-indigo-300 hover:bg-slate-50 text-slate-600"
                        )}
                      >
@@ -108,6 +119,34 @@ export function ReviewQuiz({ quiz, onConfirm }: ReviewQuizProps) {
                    );
                  })
                )}
+             </div>
+
+             <div className="flex justify-end pt-2 border-t border-slate-100">
+               <button
+                 onClick={async () => {
+                   const optionsText = q.options ? q.options.join('\n') : '';
+                    let gabarito = q.correctAnswer;
+                    if (q.type !== "discursive") {
+                      const match = gabarito.match(/^([A-Ea-e])\)/);
+                      if (match) gabarito = match[1].toUpperCase();
+                      else if (q.options) {
+                        const idx = q.options.indexOf(gabarito);
+                        if (idx >= 0) gabarito = ["A", "B", "C", "D", "E", "F"][idx];
+                      }
+                    }
+                    const gabaritoText = q.type === "discursive" ? gabarito : `letra ${gabarito}`;
+                    const textToCopy = `${q.text}\n\n${optionsText}\n\nO gabarito é ${gabaritoText}, mas não entendi, pode me explicar?`;
+                   try {
+                     await navigator.clipboard.writeText(textToCopy);
+                     alert('Copiado para o NotebookLM!');
+                   } catch (err) {
+                     console.error('Falha ao copiar', err);
+                   }
+                 }}
+                 className="text-xs font-bold text-slate-600 bg-slate-100 px-4 py-2 rounded-lg hover:bg-slate-200 transition-colors flex items-center justify-center gap-1.5"
+               >
+                 <BookOpen className="w-4 h-4" /> NotebookLM
+               </button>
              </div>
           </div>
         ))}

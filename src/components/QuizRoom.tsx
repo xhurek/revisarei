@@ -1,25 +1,35 @@
 import { apiFetch, parseJsonResponse } from "../lib/firebase";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Quiz, Question, UserProfile } from '../types';
 import { getMainArea } from '../lib/categories';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronRight, ChevronLeft, CheckCircle2, XCircle, ArrowLeft, Trophy, Brain, User as UserIcon, Clock, Eye, EyeOff, Heart } from 'lucide-react';
+import { ChevronRight, ChevronLeft, CheckCircle2, XCircle, ArrowLeft, Trophy, Brain, User as UserIcon, Clock, Eye, EyeOff, Heart, BookOpen } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
 import { collection, query, where, getDocs, addDoc, orderBy, doc, updateDoc, setDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { UserTitleBadge } from './UserTitleBadge';
 
-function isUserAnswerCorrect(userAns: string, correctAns: string, options?: string[]): boolean {
-  if (!userAns || !correctAns) return false;
+function isUserAnswerCorrect(userAns: any, correctAns: any, options?: any[]): boolean {
+  if (userAns === undefined || userAns === null || correctAns === undefined || correctAns === null) return false;
   
-  const cleanUser = userAns.trim().toLowerCase();
-  const cleanCorrect = correctAns.trim().toLowerCase();
+  const cleanUser = String(userAns).trim().toLowerCase();
+  const cleanCorrect = String(correctAns).trim().toLowerCase();
   
   if (cleanUser === cleanCorrect) return true;
+
+  if (/^\d+$/.test(cleanCorrect) && options && options.length > 0) {
+     const idx = parseInt(cleanCorrect, 10);
+     if (idx >= 0 && idx < options.length) {
+       if (String(options[idx]).trim().toLowerCase() === cleanUser) return true;
+     }
+     if (idx >= 1 && idx <= options.length) {
+       if (String(options[idx - 1]).trim().toLowerCase() === cleanUser) return true;
+     }
+  }
   
   const getLetter = (text: string): string | null => {
-    const trimmed = text.trim();
+    const trimmed = String(text).trim();
     if (/^[A-F]$/i.test(trimmed)) {
       return trimmed.toUpperCase();
     }
@@ -30,8 +40,8 @@ function isUserAnswerCorrect(userAns: string, correctAns: string, options?: stri
     return null;
   };
 
-  const userLetter = getLetter(userAns);
-  const correctLetter = getLetter(correctAns);
+  const userLetter = getLetter(cleanUser);
+  const correctLetter = getLetter(cleanCorrect);
 
   if (userLetter && correctLetter && userLetter === correctLetter) {
     return true;
@@ -40,7 +50,7 @@ function isUserAnswerCorrect(userAns: string, correctAns: string, options?: stri
   if (options && options.length > 0) {
     const checkLetters = ['A', 'B', 'C', 'D', 'E', 'F'];
     
-    const userIndex = options.findIndex(opt => opt.trim().toLowerCase() === cleanUser);
+    const userIndex = options.findIndex(opt => String(opt).trim().toLowerCase() === cleanUser);
     if (userIndex !== -1) {
       const userAssignedLetter = checkLetters[userIndex];
       
@@ -49,10 +59,10 @@ function isUserAnswerCorrect(userAns: string, correctAns: string, options?: stri
       }
       
       const cleanOpt = (text: string) => {
-        return text.replace(/^([A-F])[\)\.\-\s]+/i, '').trim().toLowerCase();
+        return String(text).replace(/^([A-F])[\)\.\-\s]+/i, '').trim().toLowerCase();
       };
       
-      if (cleanOpt(userAns) === cleanOpt(correctAns)) {
+      if (cleanOpt(cleanUser) === cleanOpt(cleanCorrect)) {
         return true;
       }
     }
@@ -60,7 +70,7 @@ function isUserAnswerCorrect(userAns: string, correctAns: string, options?: stri
     if (correctLetter) {
       const correctIdx = checkLetters.indexOf(correctLetter);
       if (correctIdx !== -1 && correctIdx < options.length) {
-        const correctOptionText = options[correctIdx];
+        const correctOptionText = String(options[correctIdx]);
         if (correctOptionText.trim().toLowerCase() === cleanUser) {
           return true;
         }
@@ -69,24 +79,35 @@ function isUserAnswerCorrect(userAns: string, correctAns: string, options?: stri
   }
 
   const cleanText = (text: string) => {
-    return text.replace(/^([A-F])[\)\.\-\s]+/i, '').trim().toLowerCase();
+    return String(text).replace(/^([A-F])[\)\.\-\s]+/i, '').trim().toLowerCase();
   };
-  if (cleanText(userAns) === cleanText(correctAns)) {
+  if (cleanText(cleanUser) === cleanText(cleanCorrect)) {
     return true;
   }
 
   return false;
 }
 
-function getFormattedCorrectAnswer(correctAns: string, options?: string[]): string {
-  if (!correctAns) return '';
-  if (!options || options.length === 0) return correctAns;
+function getFormattedCorrectAnswer(correctAns: any, options?: any[]): string {
+  if (correctAns === undefined || correctAns === null) return '';
+  const correctAnsStr = String(correctAns);
+  if (!options || options.length === 0) return correctAnsStr;
   
   const checkLetters = ['A', 'B', 'C', 'D', 'E', 'F'];
-  const cleanCorrect = correctAns.trim().toLowerCase();
+  const cleanCorrect = correctAnsStr.trim().toLowerCase();
   
+  if (/^\d+$/.test(cleanCorrect)) {
+     const idx = parseInt(cleanCorrect, 10);
+     if (idx >= 0 && idx < options.length) {
+       return String(options[idx]);
+     }
+     if (idx >= 1 && idx <= options.length) {
+       return String(options[idx - 1]);
+     }
+  }
+
   const getLetter = (text: string): string | null => {
-    const trimmed = text.trim();
+    const trimmed = String(text).trim();
     if (/^[A-F]$/i.test(trimmed)) {
       return trimmed.toUpperCase();
     }
@@ -97,11 +118,11 @@ function getFormattedCorrectAnswer(correctAns: string, options?: string[]): stri
     return null;
   };
 
-  const correctLetter = getLetter(correctAns);
+  const correctLetter = getLetter(correctAnsStr);
   if (correctLetter) {
     const correctIdx = checkLetters.indexOf(correctLetter);
     if (correctIdx !== -1 && correctIdx < options.length) {
-      const optionText = options[correctIdx];
+      const optionText = String(options[correctIdx]);
       if (optionText.trim().toUpperCase().startsWith(correctLetter)) {
         return optionText;
       }
@@ -209,13 +230,21 @@ interface QuizRoomProps {
 }
 
 export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [answers, setAnswers] = useState<{ [key: string]: string }>({});
-  const [revealed, setRevealed] = useState<{ [key: string]: boolean }>({});
+  const questions = useMemo(() => {
+    return quiz.questions.map(q => ({
+      ...q,
+      correctAnswer: q.correctAnswer || (q as any).answer || ''
+    }));
+  }, [quiz.questions]);
+
+  const progressData = quiz.progress || {};
+  const [currentIndex, setCurrentIndex] = useState(progressData.currentIndex || 0);
+  const [answers, setAnswers] = useState<{ [key: string]: string }>(progressData.answers || {});
+  const [revealed, setRevealed] = useState<{ [key: string]: boolean }>(progressData.revealed || {});
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   
   // Timer state
-  const [secondsElapsed, setSecondsElapsed] = useState(0);
+  const [secondsElapsed, setSecondsElapsed] = useState(progressData.secondsElapsed || 0);
   const [showTimer, setShowTimer] = useState(true);
 
   useEffect(() => {
@@ -238,7 +267,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
   // For discursive questions
   const [discursiveText, setDiscursiveText] = useState('');
   const [isEvaluating, setIsEvaluating] = useState(false);
-  const [discursiveFeedback, setDiscursiveFeedback] = useState<{ [key: string]: { score: number, feedback: string } }>({});
+  const [discursiveFeedback, setDiscursiveFeedback] = useState<{ [key: string]: { score: number, feedback: string } }>(progressData.discursiveFeedback || {});
 
   const [comments, setComments] = useState<any[]>([]);
   const [newComment, setNewComment] = useState('');
@@ -246,8 +275,27 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
   const [isExplaining, setIsExplaining] = useState(false);
   const [explanationStream, setExplanationStream] = useState('');
 
-  const currentQuestion = quiz.questions[currentIndex];
-  const progress = ((currentIndex) / quiz.questions.length) * 100;
+  const currentQuestion = questions[currentIndex];
+  const progress = ((currentIndex) / questions.length) * 100;
+
+  const handlePause = async () => {
+    if (quiz.id) {
+      try {
+        await updateDoc(doc(db, 'quizzes', quiz.id), {
+          progress: {
+            currentIndex,
+            answers,
+            revealed,
+            secondsElapsed,
+            discursiveFeedback
+          }
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    onCancel();
+  };
 
   useEffect(() => {
     // Reset explanation stream when question changes
@@ -439,13 +487,26 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     }
   };
 
+  const handleCopyNotebookLM = async () => {
+    const q = currentQuestion;
+    const optionsText = q.options ? q.options.join('\n') : '';
+    const textToCopy = `${q.text}\n\n${optionsText}\n\nO gabarito é letra ${getFormattedCorrectAnswer(q.correctAnswer, q.options)}, mas não entendi, pode me explicar?`;
+    
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      alert('Copiado para o NotebookLM!');
+    } catch (err) {
+      console.error('Falha ao copiar', err);
+    }
+  };
+
   const finishQuizAndSaveProgress = () => {
     let score = 0;
     const missed: any[] = [];
     const categoryStats: Record<string, { correct: number, total: number }> = {};
     let totalAnsweredCount = 0;
 
-    quiz.questions.forEach(q => {
+    questions.forEach(q => {
       const wasAnswered = revealed[q.id] || answers[q.id] !== undefined;
       if (!wasAnswered) return;
 
@@ -466,8 +527,9 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
       if (q.type === 'discursive') {
         const evalData = discursiveFeedback[q.id];
         if (evalData) {
-          score += evalData.score;
-          if (evalData.score >= 1.0) {
+          const isCorrect = evalData.score >= 0.7;
+          if (isCorrect) {
+            score++;
             categoryStats[mainCat].correct += 1;
             if (rawTag !== mainCat) categoryStats[rawTag].correct += 1;
           } else {
@@ -506,6 +568,10 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
       return;
     }
 
+    if (quiz.id) {
+      updateDoc(doc(db, 'quizzes', quiz.id), { progress: null }).catch(console.error);
+    }
+
     onFinish(score, totalAnsweredCount, missed, categoryStats, secondsElapsed);
   };
 
@@ -513,7 +579,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     setDiscursiveText('');
     setSelectedOption(null);
     
-    if (currentIndex < quiz.questions.length - 1) {
+    if (currentIndex < questions.length - 1) {
       setCurrentIndex(currentIndex + 1);
     } else {
       finishQuizAndSaveProgress();
@@ -538,13 +604,25 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     <div className="space-y-8 max-w-4xl mx-auto">
       {/* Quiz Header */}
       <div className="flex items-center justify-between">
-        <button 
-          onClick={handleAbandon}
-          className="flex items-center gap-2 text-sm font-bold text-slate-400 hover:text-indigo-600 transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          Abandonar
-        </button>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={handleAbandon}
+            className="flex items-center gap-2 text-sm font-bold text-slate-400 hover:text-indigo-600 transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Abandonar
+          </button>
+          
+          {quiz.id && (
+            <button 
+              onClick={handlePause}
+              className="text-xs font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg transition-colors border border-slate-200 shadow-sm"
+              title="Salvar progresso e continuar depois"
+            >
+              Pausar e Voltar
+            </button>
+          )}
+        </div>
 
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold">
@@ -561,7 +639,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
           </div>
 
           <div className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-            Questão <span className="text-indigo-600">{currentIndex + 1}</span> / {quiz.questions.length}
+            Questão <span className="text-indigo-600">{currentIndex + 1}</span> / {questions.length}
           </div>
         </div>
       </div>
@@ -594,6 +672,16 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
             <h1 className="text-lg md:text-xl font-semibold leading-snug text-slate-900 mt-1">
               {currentQuestion.text}
             </h1>
+
+            {((currentQuestion.images && currentQuestion.images.length > 0) || (currentQuestion as any).image) && (
+              <div className="flex gap-2 overflow-x-auto py-3 my-3 bg-slate-50 rounded-xl p-3 border border-slate-200">
+                {(currentQuestion.images || [(currentQuestion as any).image]).map((img: string, imgIdx: number) => (
+                  <div key={imgIdx} className="relative max-h-80 rounded-lg border border-slate-200 overflow-hidden bg-white shrink-0">
+                    <img src={img} alt={`Imagem da questão ${currentIndex + 1}`} className="max-h-80 object-contain" />
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Options / Input */}
@@ -652,7 +740,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
                     }
                     transition={{ duration: 0.4 }}
                     className={cn(
-                      "flex items-center gap-3 p-3 rounded-xl border text-left group transition-all",
+                      "flex items-center gap-3 p-3 rounded-xl border text-left group transition-all cursor-pointer",
                       !hasRevealed && !isSelected && "border-slate-200 hover:border-indigo-300 hover:bg-slate-50 text-slate-600 bg-white",
                       !hasRevealed && isSelected && "border-2 border-indigo-500 bg-indigo-50 text-indigo-900 shadow-sm",
                       hasRevealed && isCorrect && "border-2 border-green-500 bg-green-50 text-green-900 font-medium",
@@ -782,6 +870,12 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
               )}
 
               <div className="flex flex-col sm:flex-row justify-end items-center mt-6 pt-6 gap-3 border-t border-slate-100">
+                 <button
+                    onClick={handleCopyNotebookLM}
+                    className="text-sm font-bold text-slate-600 bg-slate-100 px-5 py-3 rounded-xl hover:bg-slate-200 transition-colors flex items-center justify-center gap-2 w-full sm:w-auto"
+                 >
+                    <BookOpen className="w-4 h-4" /> NotebookLM
+                 </button>
                  {!explanationStream && !isExplaining && (
                     <button
                       onClick={handleExplainQuestion}
@@ -795,7 +889,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
                    onClick={handleNext}
                    className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 flex items-center justify-center gap-2 transition-colors w-full sm:w-auto"
                  >
-                   {currentIndex < quiz.questions.length - 1 ? "Próxima pergunta" : "Ver resultados"}
+                   {currentIndex < questions.length - 1 ? "Próxima pergunta" : "Ver resultados"}
                    <ChevronRight className="w-5 h-5" />
                  </button>
               </div>

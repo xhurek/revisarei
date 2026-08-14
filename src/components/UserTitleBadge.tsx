@@ -3,12 +3,14 @@ import { GraduationCap, Brain, Target, Award, Star, Trophy, Sparkles, Flame, Zap
 import { cn } from '../lib/utils';
 
 export const DEFAULT_TITLES_REF = [
-  { id: 't1', name: 'Estudante de Medicina', icon: 'GraduationCap', color: 'bg-blue-50|text-blue-600|border-blue-100' },
-  { id: 't2', name: 'Interno de Medicina', icon: 'Brain', color: 'bg-indigo-50|text-indigo-600|border-indigo-100' },
-  { id: 't3', name: 'Residente Especialista', icon: 'Target', color: 'bg-violet-50|text-violet-600|border-violet-100' },
-  { id: 't4', name: 'Preceptor Clínico', icon: 'Award', color: 'bg-emerald-50|text-emerald-600|border-emerald-100' },
-  { id: 't5', name: 'Mestre da Medicina', icon: 'Star', color: 'bg-amber-50|text-amber-600|border-amber-100' },
-  { id: 't6', name: 'Lenda Médica', icon: 'Trophy', color: 'bg-rose-50|text-rose-600|border-rose-100' }
+  { id: 't1', name: 'Calouro', icon: 'User', color: 'bg-slate-50|text-slate-600|border-slate-200' },
+  { id: 't2', name: 'Café-com-leite', icon: 'Sparkles', color: 'bg-orange-50|text-orange-600|border-orange-100' },
+  { id: 't3', name: 'Aprendiz', icon: 'GraduationCap', color: 'bg-emerald-50|text-emerald-600|border-emerald-100' },
+  { id: 't4', name: 'Estudante', icon: 'Brain', color: 'bg-blue-50|text-blue-600|border-blue-100' },
+  { id: 't5', name: 'Interno de Plantão', icon: 'Stethoscope', color: 'bg-indigo-50|text-indigo-600|border-indigo-100' },
+  { id: 't6', name: 'Sabe muito', icon: 'Flame', color: 'bg-rose-50|text-rose-600|border-rose-100' },
+  { id: 't7', name: 'Lenda', icon: 'Trophy', color: 'bg-amber-50|text-amber-600|border-amber-100' },
+  { id: 't8', name: 'Gênio', icon: 'Zap', color: 'bg-violet-50|text-violet-600|border-violet-100' }
 ];
 
 const ICON_MAP: Record<string, React.FC<{ className?: string }>> = {

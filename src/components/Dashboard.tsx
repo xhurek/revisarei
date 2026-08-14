@@ -7,6 +7,7 @@ import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { UserProfile, TitleDefinition, TitleCriteria } from '../types';
 import { getMainArea, DEFAULT_MAIN_AREAS } from '../lib/categories';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
+import { PlannerWidget } from './PlannerWidget';
 import { cn } from '../lib/utils';
 
 const ICON_MAP: Record<string, React.ReactNode> = {
@@ -61,18 +62,37 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
     const unsubscribe = onSnapshot(statsRef, (statsDoc) => {
       if (statsDoc.exists()) {
         const data = statsDoc.data();
-        const today = new Date().toISOString().split('T')[0];
+        let localToday = new Date();
+        localToday.setHours(0, 0, 0, 0);
+        const todayStr = new Date(localToday.getTime() - localToday.getTimezoneOffset() * 60000).toISOString().split('T')[0];
         
+        const currentMonday = new Date(localToday);
+        const day = currentMonday.getDay();
+        const diffToMonday = currentMonday.getDate() - day + (day === 0 ? -6 : 1);
+        currentMonday.setDate(diffToMonday);
+        const currentWeekStr = new Date(currentMonday.getTime() - currentMonday.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+        
+        let weeklyCount = 0;
+        if (data.currentWeek === currentWeekStr) {
+          weeklyCount = data.weeklyQuestionCount || 0;
+        } else if (data.lastActivityDate && data.lastActivityDate >= currentWeekStr) {
+          weeklyCount = data.weeklyQuestionCount || 0;
+        }
+
+        const totalCorrectFromCategories = Object.values(data.categoryStats || {}).reduce((acc: number, curr: any) => acc + (curr.correct || 0), 0);
+
+        const hasCategoryStats = Object.keys(data.categoryStats || {}).length > 0;
+
         setStats({
           answered: data.questionsAnswered || 0,
           progression: data.progressionQuestions || 0,
-          correct: data.questionsCorrect || 0,
+          correct: hasCategoryStats ? totalCorrectFromCategories : Math.min(data.questionsAnswered || 0, Math.floor(data.questionsCorrect || 0)),
           reviewed: data.flashcardsReviewed || 0,
-          weekly: data.weeklyQuestionCount || 0,
+          weekly: weeklyCount,
           streak: data.streak || 0,
           dailyGoalsMet: data.dailyGoalsMet || 0,
           weeklyGoalsMet: data.weeklyGoalsMet || 0,
-          daily: data.lastActivityDate === today ? (data.dailyQuestionCount || 0) : 0,
+          daily: data.lastActivityDate === todayStr ? (data.dailyQuestionCount || 0) : 0,
           responses_total: data.responses_total || 0,
           saves_total: data.saves_total || 0,
           categoryStats: data.categoryStats || {}
@@ -80,7 +100,11 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
       }
       setLoading(false);
     }, (err) => {
-      console.error("Error listening to stats:", err);
+      if (err.code === 'permission-denied') {
+        console.warn("Stats subscription closed (permission-denied). Expected during logout.");
+      } else {
+        console.error("Error listening to stats:", err);
+      }
       setLoading(false);
     });
 
@@ -220,17 +244,19 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
 
   const dailyGoal = 50;
   const weeklyGoal = 300;
-  const dailyProgress = Math.min(stats.daily, dailyGoal);
-  const weeklyProgress = Math.min(stats.weekly, weeklyGoal);
+  const dailyProgress = stats.daily;
+  const weeklyProgress = stats.weekly;
 
   return (
-    <div className="space-y-8 w-full max-w-4xl mx-auto">
+    <div className="space-y-6 w-full max-w-7xl mx-auto">
       <div>
         <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">DESEMPENHO E ESTATÍSTICAS</h2>
         <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4 mt-1">Avaliação Geral</h1>
       </div>
 
-      <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-sm flex flex-col md:flex-row items-center gap-6 sm:gap-8 relative overflow-hidden">
+      
+      {/* Slim Profile Div */}
+      <div className="bg-white rounded-2xl p-4 sm:px-6 border border-slate-200 shadow-sm flex flex-col md:flex-row items-center gap-4 sm:gap-6 relative overflow-hidden">
         <button 
           onClick={() => {
             setEditName(auth.currentUser?.displayName || "");
@@ -238,76 +264,81 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
             setSelectedTitle(userData?.title || "");
             setIsEditingProfile(true);
           }}
-          className="absolute top-4 right-4 p-2 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-full transition-colors"
+          className="absolute top-3 right-3 p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-full transition-colors"
         >
-          <Edit2 className="w-5 h-5" />
+          <Edit2 className="w-4 h-4" />
         </button>
         
         <div className="relative">
-          <div className="w-24 h-24 bg-slate-100 rounded-full border-4 border-white shadow-lg overflow-hidden shrink-0 flex items-center justify-center">
+          <div className="w-16 h-16 bg-slate-100 rounded-full border-2 border-white shadow-sm overflow-hidden shrink-0 flex items-center justify-center">
             {auth.currentUser?.photoURL ? (
               <img src={auth.currentUser.photoURL} alt="Profile" className="w-full h-full object-cover" />
             ) : (
-              <User className="w-10 h-10 text-slate-400" />
+              <User className="w-8 h-8 text-slate-400" />
             )}
           </div>
           {currentTitleDef && (
-            <div className={cn("absolute -top-3 -right-3 p-2 rounded-full shadow-md border", colorParts[0], colorParts[2])}>
-                {renderIcon(currentTitleDef.icon, cn("w-5 h-5", colorParts[1]))}
+            <div className={cn("absolute -top-1 -right-1 p-1 rounded-full shadow-sm border", colorParts[0], colorParts[2])}>
+                {renderIcon(currentTitleDef.icon, cn("w-3.5 h-3.5", colorParts[1]))}
             </div>
           )}
         </div>
 
-        <div className="flex-1 text-center md:text-left space-y-4">
+        <div className="flex-1 flex flex-col md:flex-row md:items-center justify-between w-full gap-4">
           <div>
             <div className="flex flex-col md:flex-row md:items-center gap-2">
-              <h2 className="text-xl font-bold text-slate-900">Olá, {auth.currentUser?.displayName?.split(' ')[0] || 'Estudante'}!</h2>
-              <span className={cn("inline-flex text-[10px] font-black uppercase px-2.5 py-1 rounded-full border shadow-2xs", colorParts[0], colorParts[1], colorParts[2])}>
+              <h2 className="text-lg font-bold text-slate-900">Olá, {auth.currentUser?.displayName?.split(' ')[0] || 'Estudante'}!</h2>
+              <span className={cn("inline-flex text-[10px] font-black uppercase px-2 py-0.5 rounded-full border shadow-2xs", colorParts[0], colorParts[1], colorParts[2])}>
                 {userData?.title || nextTitleInfo.currentTitle}
               </span>
             </div>
             {auth.currentUser?.email === 'rmourari@ufpi.edu.br' && (
-              <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mt-1">Soberano Administrador</p>
+              <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mt-0.5">Soberano Administrador</p>
             )}
           </div>
           
-          <div className="space-y-2">
-            <div className="flex justify-between items-center text-xs font-bold text-slate-500">
-               <span>Nível: <strong className="text-indigo-600 font-extrabold">{nextTitleInfo.currentTitle}</strong></span>
-               <span>Próximo: <strong className="text-slate-800 font-extrabold">{nextTitleInfo.nextTitle}</strong> ({Math.floor(progressToNext)}%)</span>
+          <div className="w-full md:w-1/3 space-y-1 mt-2 md:mt-0 mr-4">
+            <div className="flex justify-between items-center text-[10px] font-bold text-slate-500">
+               <span>Nível: <strong className="text-indigo-600">{nextTitleInfo.currentTitle}</strong></span>
+               <span>Próximo: <strong className="text-slate-800">{nextTitleInfo.nextTitle}</strong> ({Math.floor(progressToNext)}%)</span>
             </div>
-            <div className="h-4 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200 p-0.5">
+            <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200 p-px">
                <motion.div 
                  initial={{ width: 0 }}
                  animate={{ width: `${progressToNext}%` }}
                  className="h-full bg-indigo-600 rounded-full shadow-xs shadow-indigo-200"
                />
             </div>
-            <p className="text-[10px] font-extrabold text-slate-400 text-right uppercase tracking-wider">
-               {nextTitleInfo.nextTitle !== 'Nível Máximo' ? `${nextTitleInfo.currentVal} / ${nextTitleInfo.req} questões (${Math.max(0, nextTitleInfo.req - nextTitleInfo.currentVal)} p/ avançar)` : 'Nível Máximo Atingido!'}
+            <p className="text-[9px] font-extrabold text-slate-400 text-right uppercase tracking-wider">
+               {nextTitleInfo.nextTitle !== 'Nível Máximo' ? `${nextTitleInfo.currentVal} / ${nextTitleInfo.req} (${Math.max(0, nextTitleInfo.req - nextTitleInfo.currentVal)} faltam)` : 'Máximo!'}
             </p>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {[
-          { label: 'Questões', val: stats.answered, icon: <Target className="w-5 h-5" />, color: 'text-blue-600', bg: 'bg-blue-50' },
-          { label: 'Acertos', val: stats.correct, icon: <CheckCircle2 className="w-5 h-5" />, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-          { label: 'Streak', val: stats.streak, icon: <Flame className="w-5 h-5" />, color: 'text-orange-600', bg: 'bg-orange-50' },
-          { label: 'Revisados', val: stats.reviewed, icon: <RefreshCw className="w-5 h-5" />, color: 'text-violet-600', bg: 'bg-violet-50' },
-        ].map((s, i) => (
-          <div key={i} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
-            <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center mb-3", s.bg, s.color)}>
-              {s.icon}
+      <div className="flex flex-col gap-6 w-full">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { label: 'Questões', val: stats.answered, icon: <Target className="w-5 h-5" />, color: 'text-blue-600', bg: 'bg-blue-50' },
+            { label: 'Acertos', val: stats.correct, icon: <CheckCircle2 className="w-5 h-5" />, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+            { label: 'Streak', val: stats.streak, icon: <Flame className="w-5 h-5" />, color: 'text-orange-600', bg: 'bg-orange-50' },
+            { label: 'Revisados', val: stats.reviewed, icon: <RefreshCw className="w-5 h-5" />, color: 'text-violet-600', bg: 'bg-violet-50' },
+          ].map((s, i) => (
+            <div key={i} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+              <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center mb-3", s.bg, s.color)}>
+                {s.icon}
+              </div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
+              <p className="text-2xl font-bold text-slate-900">{s.val}</p>
             </div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{s.label}</p>
-            <p className="text-2xl font-bold text-slate-900">{s.val}</p>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="w-full">
+          <PlannerWidget />
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center">
           <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Aproveitamento</h3>
           <div className="w-full h-40">
@@ -415,7 +446,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
 
       <AnimatePresence>
         {isEditingProfile && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
+          <div className="fixed top-0 left-0 w-full h-[100dvh] z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -464,6 +495,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
           </div>
         )}
       </AnimatePresence>
+      </div>
     </div>
   );
 }
