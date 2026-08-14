@@ -6,11 +6,13 @@ import { PDFDocument } from 'pdf-lib';
 import scraper from './pdf-scraper.cjs';
 import multer from "multer";
 import dotenv from "dotenv";
+import AdmZip from "adm-zip";
 import fs from "fs";
 import os from "os";
 import * as admin from 'firebase-admin';
 import { getAuth } from 'firebase-admin/auth';
 import { initializeApp } from 'firebase-admin/app';
+import { fixPdfLigatures, sanitizeQuestionFields } from './src/lib/textSanitizer';
 
 dotenv.config();
 
@@ -239,13 +241,18 @@ async function startServer() {
         Regras de extração:
         1. Identifique a numeração original da questão (ex: "1", "12", "105") se presente no texto e salve no campo 'questionNumber'.
         2. Classifique o 'type' da questão como "multiple_choice" ou "discursive".
-        3. Se for "multiple_choice", preencha o campo 'options'. NUNCA inclua as letras (A, B, C...) no texto das opções ou da resposta.
-        4. Se for "discursive", preencha 'correctAnswer'.
+        3. SEPARAÇÃO RIGOROSA DE ALTERNATIVAS: Se for "multiple_choice", extraia OBRIGATORIAMENTE todas as alternativas para a lista 'options'. NUNCA deixe as alternativas coladas dentro do enunciado. O enunciado deve conter APENAS o texto do enunciado da questão e terminar antes da opção (A). NUNCA inclua as letras (A, B, C...) no texto individual de cada opção ou da resposta.
+        4. LIMPEZA DO ENUNCIADO: Remova cabeçalhos repetitivos, anos, nomes de bancas ou textos de introdução da prova do início do enunciado (ex: se o texto começar com "2024 - USP - Questão 12. Paciente...", remova "2024 - USP - Questão 12." do enunciado e deixe apenas "Paciente..."). Salve o ano no campo 'year' e a banca no campo 'institution'.
         5. O 'correctAnswer' deve OBRIGATORIAMENTE ser deduzido do gabarito fornecido. Não tente "adivinhar" a resposta por conta própria se não houver no gabarito, deixe em branco.
         6. Defina 'mainTag' como uma das 6 Grandes Áreas da Medicina ("Clínica Médica", "Cirurgia Geral", "Pediatria", "Ginecologia", "Obstetrícia", "Medicina de Família e Comunidade", ou "Outros"). NUNCA tente extrair ou identificar as 'subtags', retorne sempre o campo 'subtags' como um array vazio [].
-        7. DETECÇÃO DE IMAGENS: Caso o enunciado faça referência a uma imagem, figura, radiografia, foto, ECG, gráfico ou esquema explicativo necessário para responder, defina 'hasImageWarning' como true.
+        7. DETECÇÃO DE IMAGENS: Caso o enunciado faça referência a uma imagem, figura, radiografia, foto, ECG, gráfico, tabela ou esquema explicativo necessário para responder, ou se usar termos explícitos como "exame abaixo", "tabela a seguir", "figura a seguir", "observe a figura", "como mostra o gráfico", defina 'hasImageWarning' como true.
         8. ATENÇÃO: Tabela ou lista de gabarito no final do texto NÃO É IMAGEM DE QUESTÃO! NUNCA marque 'hasImageWarning' como true para tabelas de gabarito.
-        ${predefinedTags?.usePredefined ? `AVISO: O usuário já definiu as tags. Use mainTag="${predefinedTags.mainTag}" e subtags=["${predefinedTags.subtag || ''}"] para todas as questões.` : ''}
+        9. CORREÇÃO DE LIGATURAS E ERROS DE OCR DO PDF:
+           - Corrija qualquer caractere '+' que tenha substituído ligaturas como 'fi' ou 'fl' em palavras (ex: 'ultrassonográ+ca' -> 'ultrassonográfica', 'mamogra+a' -> 'mamografia', '+ ́ sico' -> 'físico').
+           - Corrija a letra 'V' ou 'v' quando tiver substituído erroneamente a ligatura 'FL' ou 'FI' em palavras médicas em português (ex: 'INVAMAÇÃO' -> 'INFLAMAÇÃO', 'VUTUAÇÃO' -> 'FLUTUAÇÃO', 'REVUXO' -> 'REFLUXO', 'PROVILAXIA' -> 'PROFILAXIA', 'INSUVICIÊNCIA' -> 'INSUFICIÊNCIA', 'DIVICULDADE' -> 'DIFICULDADE').
+           - Corrija acentos, til ou cedilhas isolados/separados de letras (ex: 'c ̧ a ̃ o' -> 'ção', 'mama ́ rio' -> 'mamário', 'inspec ̧ a ̃ o' -> 'inspeção').
+           - Garanta que todo o texto esteja com a grafia médica correta e acentuação unificada em português.
+        ${predefinedTags?.usePredefined ? `AVISO: O usuário já definiu as tags. Use mainTag="${predefinedTags.mainTag}" e subtags=${JSON.stringify(predefinedTags.subtags || [])} para todas as questões.` : ''}
         
         Retorne o resultado estritamente em conformidade com o formato JSON.
       `;
@@ -302,7 +309,7 @@ async function startServer() {
       
       const parsed = JSON.parse(resultResponse.text || "{\"questions\": []}");
       
-      const finalQuestions = parsed.questions.map((q: any) => ({
+      const finalQuestions = parsed.questions.map((q: any) => sanitizeQuestionFields({
         ...q,
         id: Math.random().toString(36).substring(2, 9),
         institution: institution || '',
@@ -315,6 +322,114 @@ async function startServer() {
       res.status(500).json({ error: error.message });
     }
   });
+
+  
+  app.post("/api/upload-zip-context", verifyFirebaseToken, diskUpload.single('file'), async (req: any, res: any) => {
+    try {
+      const file = req.file;
+      if (!file) return res.status(400).json({ error: "No zip file uploaded" });
+
+      const zip = new AdmZip(file.path);
+      const zipEntries = zip.getEntries();
+      
+      const results = [];
+      for (const zipEntry of zipEntries) {
+        if (!zipEntry.isDirectory && zipEntry.entryName.toLowerCase().endsWith('.pdf')) {
+          const pdfBuffer = zipEntry.getData();
+          const tempPdfPath = path.join(os.tmpdir(), `temp-${Date.now()}-${Math.random().toString(36).substring(7)}.pdf`);
+          fs.writeFileSync(tempPdfPath, pdfBuffer);
+          
+          const response = await withRetry(() => ai.files.upload({
+              file: tempPdfPath,
+              config: {
+                mimeType: "application/pdf",
+                displayName: zipEntry.entryName
+              }
+          }));
+          
+          results.push({
+              name: response.name, 
+              uri: response.uri,
+              mimeType: response.mimeType,
+              displayName: zipEntry.entryName,
+              expiresAt: Date.now() + 48 * 60 * 60 * 1000
+          });
+          
+          fs.unlinkSync(tempPdfPath);
+        }
+      }
+      fs.unlinkSync(file.path);
+      res.json({ files: results });
+    } catch (error: any) {
+      console.error("Error uploading zip context:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/extract-single-question-and-answer-from-file", verifyFirebaseToken, async (req: any, res: any) => {
+    try {
+      const { fileUri, fileMimeType } = req.body;
+      if (!fileUri) return res.status(400).json({ error: "fileUri is required" });
+
+      const prompt = `
+        Este documento contém apenas UMA questão, e no final da página (ou do documento) está o gabarito indicando a resposta correta para ela.
+        
+        Sua tarefa:
+        1. Transcreva a questão (enunciado, alternativas).
+        2. Identifique o ano e a banca/instituição, se presentes.
+        3. Localize o gabarito no final e determine qual é a alternativa correta da questão. Defina isso no campo 'resposta_correta' apenas com a letra (ex: "A", "B", "C", "D", "E").
+        
+        NÃO tente identificar a área médica ou tópicos, retorne-os sempre vazios.
+        
+        RECONHECIMENTO DE IMAGENS:
+        Caso a questão contiver ou fizer referência a uma imagem, figura, tabela, radiografia, tomografia, ultrassom, gráfico, ECG, ecocardiograma ou esquema explicativo, ou se usar termos explícitos como "exame abaixo", "tabela a seguir", "figura a seguir", "observe a figura", "como mostra o gráfico", defina 'has_image' como true.
+      `;
+
+      const model = getModelForUser(req.user);
+
+      const response = await withRetry((selectedModel) => ai.models.generateContent({
+        model: selectedModel,
+        contents: {
+          parts: [
+            { fileData: { fileUri, mimeType: fileMimeType || "application/pdf" } },
+            { text: prompt }
+          ]
+        },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              questoes: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    numero: { type: Type.STRING },
+                    enunciado: { type: Type.STRING },
+                    alternativas: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    banca: { type: Type.STRING },
+                    ano: { type: Type.STRING },
+                    area_medica: { type: Type.STRING },
+                    topicos: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    has_image: { type: Type.BOOLEAN },
+                    descricao_da_imagem: { type: Type.STRING },
+                    resposta_correta: { type: Type.STRING }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }));
+
+      res.json(JSON.parse(response.text || "{}"));
+    } catch (error: any) {
+      console.error("Error extracting question and answer:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
 
   // Deletar arquivo
   app.post("/api/delete-file", verifyFirebaseToken, async (req, res) => {
@@ -377,6 +492,10 @@ async function startServer() {
         Identifique também o ano (ano) e a banca/instituição (banca) da questão, se aparecerem antes do enunciado.
         NÃO tente identificar a área médica ou tópicos, retorne-os sempre vazios.
         
+        SEPARAÇÃO DE ALTERNATIVAS E LIMPEZA DE ENUNCIADO:
+        - Extraia OBRIGATORIAMENTE todas as alternativas para a lista de alternativas ('alternativas'). NUNCA deixe as opções coladas dentro do enunciado. O enunciado deve conter APENAS o texto da pergunta e terminar antes da primeira alternativa (A).
+        - Remova do início do enunciado qualquer cabeçalho de prova, ano repetido, nome da banca ou 'Questão XX' (ex: em '2024 - USP - Questão 12. Paciente...', deixe no enunciado apenas 'Paciente...').
+        
         RECONHECIMENTO DE IMAGENS:
         Caso a questão contiver ou fizer referência a uma imagem, figura, radiografia, tomografia, ultrassom, gráfico, ECG, ecocardiograma ou esquema explicativo, defina 'has_image' como true.
         
@@ -384,6 +503,11 @@ async function startServer() {
         No final de provas ou simulados, existe uma tabela ou lista com o GABARITO oficial das respostas.
         A TABELA DE GABARITO NÃO É UMA IMAGEM DE QUESTÃO!
         Se você identificar a tabela/lista de gabarito no final, desconsidere-a completamente. NUNCA a considere como imagem de questão nem crie uma questão para o gabarito.
+
+        CORREÇÃO DE LIGATURAS E ERROS DE OCR DO PDF:
+        - Corrija qualquer caractere '+' que tenha substituído ligaturas como 'fi' ou 'fl' em palavras (ex: 'ultrassonográ+ca' -> 'ultrassonográfica', 'mamogra+a' -> 'mamografia', '+ ́ sico' -> 'físico').
+        - Corrija a letra 'V' ou 'v' quando tiver substituído erroneamente a ligatura 'FL' ou 'FI' em palavras médicas em português (ex: 'INVAMAÇÃO' -> 'INFLAMAÇÃO', 'VUTUAÇÃO' -> 'FLUTUAÇÃO', 'REVUXO' -> 'REFLUXO', 'PROVILAXIA' -> 'PROFILAXIA', 'INSUVICIÊNCIA' -> 'INSUFICIÊNCIA', 'DIVICULDADE' -> 'DIFICULDADE').
+        - Corrija acentos, til ou cedilhas isolados/separados de letras (ex: 'c ̧ a ̃ o' -> 'ção', 'mama ́ rio' -> 'mamário', 'inspec ̧ a ̃ o' -> 'inspeção', 'brac ̧ os' -> 'braços'). Garanta que todo o texto esteja com a grafia médica correta e acentuação unificada em português.
       `;
 
       const model = getModelForUser(req.user);
@@ -425,7 +549,18 @@ async function startServer() {
         }
       }));
 
-      res.json(JSON.parse(response.text || "{\"questoes\": []}"));
+      const rawBatch = JSON.parse(response.text || "{\"questoes\": []}");
+      const sanitizedBatch = {
+        ...rawBatch,
+        questoes: (rawBatch.questoes || []).map((q: any) => ({
+          ...q,
+          enunciado: fixPdfLigatures(q.enunciado || ''),
+          alternativas: (q.alternativas || []).map((alt: string) => fixPdfLigatures(alt)),
+          banca: fixPdfLigatures(q.banca || '')
+        }))
+      };
+
+      res.json(sanitizedBatch);
     } catch (error: any) {
       console.error("Error extracting questions batch:", error);
       res.status(500).json({ error: error.message });

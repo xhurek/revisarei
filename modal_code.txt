@@ -1,0 +1,295 @@
+            {isCreateQuizModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-4xl max-h-[90vh] rounded-2xl p-6 shadow-2xl flex flex-col">
+            <h2 className="text-xl font-black text-slate-900 mb-4">Criar Caderno de Questões</h2>
+            
+            <div className="flex-1 overflow-y-auto pr-2 space-y-6">
+              <div className="space-y-6">
+                {/* INFORMAÇÕES DO CADERNO */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4">
+                  <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest border-b border-slate-200 pb-2">Detalhes do Caderno</h3>
+                  
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Nome do Caderno</label>
+                    <input 
+                      type="text" 
+                      value={newQuizTitle}
+                      onChange={e => setNewQuizTitle(e.target.value)}
+                      placeholder="Ex: Revisão Final 2026"
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 outline-none font-medium text-sm focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Pasta (Opcional)</label>
+                    <select 
+                      onChange={e => {
+                        const el = document.getElementById('newQuizFolderInput') as HTMLInputElement;
+                        if(el) {
+                           if(e.target.value === '__NEW__') {
+                               el.value = '';
+                               el.style.display = 'block';
+                           } else {
+                               el.value = e.target.value;
+                               el.style.display = 'none';
+                               if(userFolders[e.target.value]) {
+                                   setNewQuizColor(userFolders[e.target.value]);
+                               }
+                           }
+                        }
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 outline-none font-medium text-sm mb-2 focus:border-indigo-500"
+                    >
+                      <option value="">Sem pasta</option>
+                      {Object.keys(userFolders).map(f => (
+                        <option key={f} value={f}>{f}</option>
+                      ))}
+                      <option value="__NEW__">+ Criar Nova Pasta</option>
+                    </select>
+                    <input 
+                      type="text" 
+                      id="newQuizFolderInput"
+                      placeholder="Nome da nova pasta"
+                      style={{ display: 'none' }}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2.5 outline-none font-medium text-sm mt-2 focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Cor da Pasta</label>
+                    <div className="flex flex-wrap gap-2">
+                      {['bg-indigo-500', 'bg-blue-500', 'bg-teal-500', 'bg-emerald-500', 'bg-purple-500', 'bg-rose-500', 'bg-amber-500'].map(color => (
+                        <button
+                          key={color}
+                          onClick={() => setNewQuizColor(color)}
+                          className={`w-8 h-8 rounded-full ${color} ${newQuizColor === color ? 'ring-2 ring-offset-2 ring-indigo-600' : ''}`}
+                        />
+                      ))}
+                      <label className="w-8 h-8 rounded-full border border-slate-300 overflow-hidden cursor-pointer relative flex items-center justify-center bg-white hover:bg-slate-100">
+                        <Plus className="w-4 h-4 text-slate-500" />
+                        <input 
+                          type="color" 
+                          onChange={e => setNewQuizColor(e.target.value)}
+                          className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                        />
+                      </label>
+                    </div>
+                    {newQuizColor.startsWith('#') && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <div className="w-6 h-6 rounded-full" style={{ backgroundColor: newQuizColor }}></div>
+                        <span className="text-xs text-slate-500 font-medium">Cor personalizada</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* FILTROS DO CADERNO */}
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4">
+                  <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest border-b border-slate-200 pb-2">Filtros de Questões</h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Grandes Áreas */}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Grandes Áreas</label>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input 
+                          type="text"
+                          placeholder="Buscar área..."
+                          value={searchMainTags}
+                          onChange={e => setSearchMainTags(e.target.value)}
+                          className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <div className="max-h-32 overflow-y-auto bg-white border border-slate-200 rounded-lg p-2 space-y-1">
+                        {availableTags.filter(t => t.name.toLowerCase().includes(searchMainTags.toLowerCase())).map(tag => (
+                          <label key={tag.id} className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                            <input 
+                              type="checkbox" 
+                              checked={modalFilters.mainTags.includes(tag.name)}
+                              onChange={() => handleToggleFilter('mainTags', tag.name)}
+                              className="text-indigo-600 rounded border-slate-300"
+                            />
+                            {tag.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Subtags */}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Subtags</label>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input 
+                          type="text"
+                          placeholder="Buscar subtag..."
+                          value={searchSubtags}
+                          onChange={e => setSearchSubtags(e.target.value)}
+                          className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <div className="max-h-32 overflow-y-auto bg-white border border-slate-200 rounded-lg p-2 space-y-1">
+                        {uniqueSubtags.filter(s => s.toLowerCase().includes(searchSubtags.toLowerCase())).map((sub, i) => (
+                          <label key={i} className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                            <input 
+                              type="checkbox" 
+                              checked={modalFilters.subtags.includes(sub)}
+                              onChange={() => handleToggleFilter('subtags', sub)}
+                              className="text-indigo-600 rounded border-slate-300"
+                            />
+                            {sub}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Instituições & Anos */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Bancas</label>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input 
+                          type="text"
+                          placeholder="Buscar banca..."
+                          value={searchInstitutions}
+                          onChange={e => setSearchInstitutions(e.target.value)}
+                          className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <div className="max-h-32 overflow-y-auto bg-white border border-slate-200 rounded-lg p-2 space-y-1">
+                        {uniqueInstitutions.filter(inst => inst.toLowerCase().includes(searchInstitutions.toLowerCase())).map((inst, i) => (
+                          <label key={i} className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                            <input 
+                              type="checkbox" 
+                              checked={modalFilters.institutions.includes(inst)}
+                              onChange={() => handleToggleFilter('institutions', inst)}
+                              className="text-indigo-600 rounded border-slate-300"
+                            />
+                            {inst}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Anos</label>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input 
+                          type="text"
+                          placeholder="Buscar ano..."
+                          value={searchYears}
+                          onChange={e => setSearchYears(e.target.value)}
+                          className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <div className="max-h-32 overflow-y-auto bg-white border border-slate-200 rounded-lg p-2 space-y-1">
+                        {uniqueYears.filter(yr => yr.toLowerCase().includes(searchYears.toLowerCase())).map((yr, i) => (
+                          <label key={i} className="flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer hover:bg-slate-50 p-1 rounded">
+                            <input 
+                              type="checkbox" 
+                              checked={modalFilters.years.includes(yr)}
+                              onChange={() => handleToggleFilter('years', yr)}
+                              className="text-indigo-600 rounded border-slate-300"
+                            />
+                            {yr}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            {/* FOOTER */}
+            <div className="pt-6 mt-auto border-t border-slate-100 flex items-center justify-between">
+              <div className="text-sm font-bold text-slate-700">
+                {(() => {
+                  const filteredQuestions = questions.filter(q => {
+                    if (modalFilters.mainTags.length > 0 && !modalFilters.mainTags.includes(q.mainTag)) return false;
+                    if (modalFilters.subtags.length > 0 && !(q.subtags?.some(s => modalFilters.subtags.includes(s)) || (q.subtag && modalFilters.subtags.includes(q.subtag)))) return false;
+                    if (modalFilters.institutions.length > 0 && !modalFilters.institutions.includes(q.institution || '')) return false;
+                    if (modalFilters.years.length > 0 && !modalFilters.years.includes(q.year || '')) return false;
+                    return true;
+                  });
+                  return `${filteredQuestions.length} questões selecionadas`;
+                })()}
+              </div>
+
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setIsCreateQuizModalOpen(false)}
+                  className="px-4 py-2 rounded-xl font-bold text-slate-600 hover:bg-slate-100 transition"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={async () => {
+                    if(!newQuizTitle.trim()) return alert('Preencha o nome do caderno.');
+                    
+                    const filteredQuestions = questions.filter(q => {
+                      if (modalFilters.mainTags.length > 0 && !modalFilters.mainTags.includes(q.mainTag)) return false;
+                      if (modalFilters.subtags.length > 0 && !(q.subtags?.some(s => modalFilters.subtags.includes(s)) || (q.subtag && modalFilters.subtags.includes(q.subtag)))) return false;
+                      if (modalFilters.institutions.length > 0 && !modalFilters.institutions.includes(q.institution || '')) return false;
+                      if (modalFilters.years.length > 0 && !modalFilters.years.includes(q.year || '')) return false;
+                      return true;
+                    });
+                    
+                    if (filteredQuestions.length === 0) return alert('Nenhuma questão selecionada com esses filtros.');
+
+                    try {
+                      const el = document.getElementById('newQuizFolderInput') as HTMLInputElement;
+                      const folderVal = el ? el.value.trim() : '';
+                      const qData = {
+                        title: newQuizTitle,
+                        tag: folderVal || null,
+                        questions: filteredQuestions.map(q => ({
+                          id: Math.random().toString(36).substring(2,10),
+                          type: q.type,
+                          text: q.text,
+                          options: q.options || [],
+                          correctAnswer: q.correctAnswer,
+                          explanation: q.explanation || '',
+                          category: q.mainTag || '',
+                          images: q.images || (q.image ? [q.image] : [])
+                        })),
+                        userId: auth.currentUser!.uid,
+                        createdAt: new Date().toISOString()
+                      };
+                      await addDoc(collection(db, 'quizzes'), qData);
+                      
+                      if (folderVal) {
+                          const userRef = doc(db, 'users', auth.currentUser!.uid);
+                          const userSnap = await getDoc(userRef);
+                          if (userSnap.exists()) {
+                              const data = userSnap.data();
+                              const currentColors = data.folderColors || {};
+                              if (!currentColors[folderVal]) {
+                                  await updateDoc(userRef, {
+                                      [`folderColors.${folderVal}`]: newQuizColor
+                                  });
+                              }
+                          }
+                      }
+
+                      setIsCreateQuizModalOpen(false);
+                      setNewQuizTitle('');
+                      alert('Caderno criado com sucesso!');
+                    } catch (e) {
+                      console.error(e);
+                      alert('Erro ao criar caderno.');
+                    }
+                  }}
+                  className="px-5 py-2 bg-indigo-600 text-white rounded-xl font-bold shadow-md shadow-indigo-200 hover:bg-indigo-700 transition"
+                >
+                  Criar Caderno
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
