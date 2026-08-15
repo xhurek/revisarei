@@ -567,6 +567,37 @@ async function startServer() {
     }
   });
 
+  // Extract text from document (PDF, DOCX, TXT)
+  app.post("/api/parse-document", upload.single('file'), async (req, res) => {
+    try {
+      const file = req.file;
+      if (!file) {
+        return res.status(400).json({ error: "File is required" });
+      }
+
+      const mimeType = file.mimetype;
+      const ext = path.extname(file.originalname).toLowerCase();
+      let text = '';
+
+      if (mimeType === 'application/pdf' || ext === '.pdf') {
+        text = await scraper.parseText(file.buffer);
+      } else if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || ext === '.docx') {
+        const mammoth = await import('mammoth');
+        const result = await mammoth.extractRawText({ buffer: file.buffer });
+        text = result.value;
+      } else if (mimeType === 'text/plain' || ext === '.txt') {
+        text = file.buffer.toString('utf-8');
+      } else {
+        return res.status(400).json({ error: "Unsupported file type. Use PDF, DOCX, or TXT." });
+      }
+
+      res.json({ text });
+    } catch (error: any) {
+      console.error("Error parsing document:", error);
+      res.status(500).json({ error: error.message || "Failed to parse document" });
+    }
+  });
+
   // Processar PDF
   app.post("/api/process-pdf", verifyFirebaseToken, upload.fields([
     { name: 'pdf', maxCount: 1 },

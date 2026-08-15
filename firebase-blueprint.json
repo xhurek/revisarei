@@ -159,12 +159,38 @@
         "subtags": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["name", "subtags"]
+    },
+    "PublicStudyNote": {
+      "title": "PublicStudyNote",
+      "description": "A study notebook shared publicly in the community.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "folder": { "type": "string" },
+        "userId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorPhoto": { "type": "string" },
+        "authorTitle": { "type": "string" },
+        "likes": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "originalNoteId": { "type": "string" }
+      },
+      "required": ["title", "content", "folder", "userId", "createdAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "User profile with document-specific settings."
+    },
+    "/users/{userId}/studyNotes/{noteId}": {
+      "schema": "object",
+      "description": "User's personal study notes."
+    },
+    "/publicStudyNotes/{noteId}": {
+      "schema": "PublicStudyNote",
+      "description": "Study notes shared with the community."
     },
     "/users/{userId}/flashcards/{flashcardId}": {
       "schema": "Flashcard",

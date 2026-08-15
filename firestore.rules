@@ -59,6 +59,20 @@ service cloud.firestore {
              (!data.keys().contains('likes') || data.likes is list);
     }
 
+    function isValidPublicStudyNote(data) {
+      return data.keys().hasAll(['title', 'content', 'folder', 'userId', 'createdAt']) &&
+             data.title is string && data.title.size() <= 500 &&
+             data.content is string && data.content.size() <= 5000000 &&
+             data.folder is string && data.folder.size() <= 100 &&
+             data.userId == request.auth.uid &&
+             (!data.keys().contains('isPublic') || data.isPublic is bool) &&
+             (!data.keys().contains('authorName') || data.authorName is string) &&
+             (!data.keys().contains('authorPhoto') || data.authorPhoto is string) &&
+             (!data.keys().contains('authorTitle') || data.authorTitle is string) &&
+             (!data.keys().contains('originalNoteId') || data.originalNoteId is string) &&
+             (!data.keys().contains('likes') || data.likes is list);
+    }
+
     function isValidComment(data) {
       return data.keys().hasAll(['quizId', 'questionId', 'quizTitle', 'text', 'userId', 'userName', 'createdAt']) &&
              data.quizId is string && data.quizId.size() <= 128 &&
@@ -89,6 +103,11 @@ service cloud.firestore {
       allow update: if (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['folderColors', 'earnedTitles', 'title', 'name'])) || isAdmin();
       allow delete: if isAdmin();
       
+      // Study Notes: User-specific subcollection
+      match /studyNotes/{noteId} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+
       // Flashcards: User-specific subcollection
       match /flashcards/{flashcardId} {
         allow read, delete: if isOwner(userId) || isAdmin();
@@ -120,6 +139,18 @@ service cloud.firestore {
       allow update: if (isAuthorized() && (
                         (resource.data.userId == request.auth.uid && isValidQuiz(incoming())) ||
                         (resource.data.isPublic == true && incoming().diff(existing()).affectedKeys().hasOnly(['likes']))
+                      )) || isAdmin();
+    }
+
+    // 3b. Public Study Notes
+    match /publicStudyNotes/{noteId} {
+      allow get: if isAuthorized();
+      allow list: if isAuthorized();
+      allow create: if (isAuthorized() && isValidPublicStudyNote(incoming())) || isAdmin();
+      allow delete: if (isAuthorized() && resource.data.userId == request.auth.uid) || isAdmin();
+      allow update: if (isAuthorized() && (
+                        (resource.data.userId == request.auth.uid && isValidPublicStudyNote(incoming())) ||
+                        incoming().diff(existing()).affectedKeys().hasOnly(['likes'])
                       )) || isAdmin();
     }
 
