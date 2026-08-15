@@ -5,7 +5,9 @@ import { Quiz } from '../types';
 import { handleFirestoreError, OperationType, auth, db, apiFetch, parseJsonResponse } from '../lib/firebase';
 import { collection, query, where, getDocs, orderBy, addDoc, doc, getDoc, updateDoc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { cn } from '../lib/utils';
+import { CreateQuizModal } from './CreateQuizModal';
 import { AddQuestionsView } from './QuestionBankView';
+import { StudyNotesSection } from './StudyNotesSection';
 
 export const PREDEFINED_MAIN_TAGS = [
   "Cardiologia",
@@ -37,11 +39,12 @@ export const PREDEFINED_SUBTAGS = [
 interface QuizzesViewProps {
   onQuizStart: (quiz: Quiz) => void;
   onQuizGenerated: (quiz: Quiz, skipReview: boolean) => void;
+  isAdmin?: boolean;
 }
 
 
 
-export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) {
+export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: QuizzesViewProps) {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
   const [availableTags, setAvailableTags] = useState<{ id: string, name: string, subtags: string[] }[]>([]);
@@ -69,11 +72,12 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
   const allExistingSubtags = Array.from(new Set(quizzes.flatMap(q => {
     const subtags = Array.isArray(q.subtags) ? q.subtags : 
                     (typeof q.subtags === 'object' && q.subtags !== null) ? Object.values(q.subtags) : 
-                    (q.subtag ? [q.subtag] : []);
+                    ((q as any).subtag ? [(q as any).subtag] : []);
     return subtags;
-  }))).filter((t: any) => t && typeof t === 'string' && t.trim() !== '');
+  }))).filter((t): t is string => typeof t === 'string' && t.trim() !== '');
   const availableSubtags = Array.from(new Set([...PREDEFINED_SUBTAGS, ...allExistingSubtags])).sort();
   const [isCreating, setIsCreating] = useState(false);
+  const [isCreateQuizModalOpen, setIsCreateQuizModalOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -422,23 +426,37 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
           <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4 mt-1">Meus testes</h1>
         </div>
         {!isCreating && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 self-end md:self-auto">
             <button 
               onClick={() => fileReaderRef.current?.click()}
-              className="bg-slate-100 text-slate-700 px-4 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition shadow-sm border border-slate-200"
+              className="bg-slate-100 text-slate-700 px-4 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-200 transition shadow-sm border border-slate-200"
             >
-              <Download className="w-5 h-5" /> Importar
+              <Download className="w-5 h-5" /> <span className="hidden sm:inline">Importar</span>
               <input type="file" ref={fileReaderRef} onChange={handleImport} className="hidden" accept=".revisarei,application/json" />
             </button>
             <button 
-              onClick={() => setIsCreating(true)}
-              className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-indigo-700 transition shadow-lg shadow-indigo-100"
+              onClick={() => { if (isAdmin) { setIsCreating(true); setTimeout(() => window.scrollBy({ top: 300, behavior: "smooth" }), 100); } else { setIsCreateQuizModalOpen(true); } }}
+              className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition shadow-lg shadow-indigo-100"
             >
-              <Plus className="w-5 h-5" /> Novo caderno
+              <Plus className="w-5 h-5" /> Novo <span className="hidden sm:inline">caderno</span>
             </button>
           </div>
         )}
       </header>
+
+      {/* Modal para não-admins criarem caderno com filtros */}
+      <CreateQuizModal 
+        isOpen={isCreateQuizModalOpen}
+        onClose={() => setIsCreateQuizModalOpen(false)}
+        questions={bankQuestions}
+        userFolders={folderColors}
+        uniqueMainTags={Array.from(new Set(bankQuestions.map(q => q.mainTag).filter(Boolean))).sort()}
+        uniqueSubtags={Array.from(new Set(bankQuestions.flatMap(q => q.subtags || (q.subtag ? [q.subtag] : [])).filter(Boolean))).sort()}
+        uniqueInstitutions={Array.from(new Set(bankQuestions.map(q => q.institution).filter(Boolean))).sort()}
+        uniqueYears={Array.from(new Set(bankQuestions.map(q => q.year).filter(Boolean))).sort()}
+        auth={auth}
+        db={db}
+      />
 
       {isCreating ? (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
@@ -580,7 +598,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
                   <div key={folder} className={`${colorStr} text-white p-6 rounded-3xl shadow-md cursor-pointer hover:scale-[1.02] hover:shadow-lg transition flex flex-col justify-between min-h-[160px] relative group`} onClick={(e) => {
                     // Prevent default if clicking color picker
                     if ((e.target as HTMLElement).closest('.color-picker')) return;
-                    setSelectedFolder(folder);
+                    setSelectedFolder(folder); setTimeout(() => window.scrollBy({ top: 120, behavior: "smooth" }), 100);
                   }}>
                     <div className="flex justify-between items-start">
                       <Folder className="w-8 h-8 text-white/80" />
@@ -648,7 +666,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
                 {quizzes.filter(q => (q.mainTag || q.tag || "Sem assunto") === selectedFolder).map((q) => (
                   <div key={q.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all flex flex-col h-full relative group">
                     <div className="absolute top-4 right-4 flex gap-1 bg-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={(e) => { e.stopPropagation(); setEditingQuiz(q); setEditTitle(q.title); setEditMainTag(q.mainTag || q.tag || ''); setEditSubtags((Array.isArray(q.subtags) ? q.subtags : (typeof q.subtags === 'object' && q.subtags !== null ? Object.values(q.subtags) : (q.subtag ? [q.subtag] : []))).filter(t => t && typeof t === 'string' && t.trim() !== '')); setEditIsPublic(!!q.isPublic) }} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="Editar pasta ou nome">
+                      <button onClick={(e) => { e.stopPropagation(); setEditingQuiz(q); setEditTitle(q.title); setEditMainTag(q.mainTag || q.tag || ''); setEditSubtags((Array.isArray(q.subtags) ? q.subtags : (typeof q.subtags === 'object' && q.subtags !== null ? Object.values(q.subtags) : ((q as any).subtag ? [(q as any).subtag] : []))).filter((t): t is string => t !== null && t !== undefined && typeof t === 'string' && t.trim() !== '')); setEditIsPublic(!!q.isPublic) }} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="Editar pasta ou nome">
                         <Pencil className="w-4 h-4" />
                       </button>
                       <button onClick={(e) => { e.stopPropagation(); handleExport(q); }} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded" title="Exportar (.revisarei)">
@@ -664,7 +682,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
                         <Tag className="w-3 h-3" />
                         {q.mainTag || q.tag || "Sem assunto"}
                       </span>
-                    {((Array.isArray(q.subtags) ? q.subtags : (typeof q.subtags === 'object' && q.subtags !== null ? Object.values(q.subtags) : (q.subtag ? [q.subtag] : []))) || []).filter(t => t && typeof t === 'string' && t.trim() !== '').map((t, idx) => (
+                    {(((Array.isArray(q.subtags) ? q.subtags : (typeof q.subtags === 'object' && q.subtags !== null ? Object.values(q.subtags) : ((q as any).subtag ? [(q as any).subtag] : []))) || []) as string[]).filter((t) => t !== null && t !== undefined && typeof t === 'string' && t.trim() !== '').map((t, idx) => (
                         <span key={`${q.id}-subtag-${t}-${idx}`} className="inline-flex items-center px-2 py-0.5 rounded bg-slate-200 text-slate-800 text-xs font-bold tracking-tight">
                           {t}
                         </span>
@@ -918,6 +936,8 @@ export function QuizzesView({ onQuizStart, onQuizGenerated }: QuizzesViewProps) 
           </div>
         </div>
       )}
+      {/* Study Notes Section - Rendered Below Quizzes Folders */}
+      {!isCreating && <StudyNotesSection />}
     </div>
   );
 }

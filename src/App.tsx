@@ -488,12 +488,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-600 selection:text-white overflow-x-hidden flex flex-col">
       {/* Sidebar / Navigation */}
       <div className="sticky top-0 z-50 w-full bg-white/90 backdrop-blur-md border-b border-slate-200 shadow-sm pointer-events-auto">
-        <motion.nav 
-          initial={{ y: 0 }}
-          animate={{ y: menuVisible || currentView === View.QUIZ ? 0 : -120 }}
-          transition={{ duration: 0.3, ease: "easeInOut" }}
-          className="w-full max-w-6xl mx-auto"
-        >
+        <nav className="w-full max-w-6xl mx-auto">
           <div 
             ref={menuScrollRef}
             onMouseDown={handleMouseDown}
@@ -622,7 +617,7 @@ export default function App() {
             </button>
             <div className="w-4 lg:w-6 shrink-0" aria-hidden="true" />
           </div>
-        </motion.nav>
+        </nav>
       </div>
 
       {/* Main Content */}
@@ -662,7 +657,7 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.3 }}
             >
-              <QuizzesView onQuizGenerated={handleQuizGenerated} onQuizStart={handleQuizStart} />
+              <QuizzesView onQuizGenerated={handleQuizGenerated} onQuizStart={handleQuizStart} isAdmin={isAdmin} />
             </motion.div>
           )}
 

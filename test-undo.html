@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<body>
+<div contenteditable="true" id="editor">
+  <p id="p1">Paragraph 1</p>
+  <p id="p2">Paragraph 2</p>
+</div>
+<button id="btn">Modify P1</button>
+<button id="undo">Undo</button>
+<script>
+document.getElementById('btn').addEventListener('click', () => {
+  const p1 = document.getElementById('p1');
+  const sel = window.getSelection();
+  const range = document.createRange();
+  range.selectNode(p1);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  
+  const clone = p1.cloneNode(true);
+  clone.id = 'toc-123';
+  clone.style.backgroundColor = 'red';
+  document.execCommand('insertHTML', false, clone.outerHTML);
+});
+document.getElementById('undo').addEventListener('click', () => {
+  document.execCommand('undo');
+});
+</script>
+</body>
+</html>

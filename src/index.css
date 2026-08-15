@@ -20,3 +20,48 @@
 *::-webkit-scrollbar-thumb:hover {
   background-color: #cbd5e1;
 }
+
+/* Study Notes Editor List Styling (Explicit Disc Markers) */
+html {
+  font-size: 13px; /* Scales down UI by ~18% on small mobile */
+}
+
+@media (min-width: 640px) {
+  html {
+    font-size: 14px; /* Small tablets */
+  }
+}
+
+@media (min-width: 768px) {
+  html {
+    font-size: 16px; /* Normal size for tablet/desktop */
+  }
+}
+
+.study-editor-content ul,
+div[contenteditable="true"] ul {
+  list-style-type: disc !important;
+  list-style-position: outside !important;
+  padding-left: 2rem !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: 0.5rem !important;
+}
+
+.study-editor-content ol,
+div[contenteditable="true"] ol {
+  list-style-type: decimal !important;
+  list-style-position: outside !important;
+  padding-left: 2rem !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: 0.5rem !important;
+}
+
+.study-editor-content li,
+div[contenteditable="true"] li {
+  display: list-item !important;
+  list-style-type: disc !important;
+  margin-top: 0.25rem !important;
+  margin-bottom: 0.25rem !important;
+  padding-left: 0.25rem !important;
+}
+

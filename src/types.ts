@@ -2,12 +2,30 @@ export enum View {
   DASHBOARD = 'DASHBOARD',
   BANK = 'BANK',
   LANDING = 'LANDING',
+  STUDY_NOTES = 'STUDY_NOTES',
   REVIEW = 'REVIEW',
   QUIZ = 'QUIZ',
   RESULTS = 'RESULTS',
   COMMUNITY = 'COMMUNITY',
   FLASHCARDS = 'FLASHCARDS',
   ADMIN = 'ADMIN'
+}
+
+export interface StudyNote {
+  id?: string;
+  title: string;
+  content: string; // HTML content from rich text editor
+  folder: string; // Equivalente a mainTag em quizzes
+  userId?: string;
+  createdAt?: string;
+  createdBy?: string;
+  isPublic?: boolean;
+  authorName?: string;
+  authorPhoto?: string;
+  authorTitle?: string;
+  originalNoteId?: string;
+  likes?: string[];
+  publicId?: string;
 }
 
 export type TitleCriteria = 'correctAnswers' | 'quizzesCompleted' | 'studyHours' | 'daysStreak' | 'total_questions' | 'daily_questions' | 'weekly_questions' | 'flashcards_reviewed' | 'streak_days' | 'daily_goals_met' | 'weekly_goals_met' | 'responses_total' | 'saves_total';
@@ -65,6 +83,7 @@ export interface Quiz {
   id?: string;
   title: string;
   mainTag?: string;
+  subtag?: string;
   subtags?: string[];
   tag?: string;
   isPublic?: boolean;
@@ -92,6 +111,7 @@ export interface Flashcard {
   explanation: string;
   tag?: string;
   subtag?: string;
+  subtags?: string[];
   nextReview: string;
   interval: number;
   easeFactor: number;

@@ -79,7 +79,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
           weeklyCount = data.weeklyQuestionCount || 0;
         }
 
-        const totalCorrectFromCategories = Object.values(data.categoryStats || {}).reduce((acc: number, curr: any) => acc + (curr.correct || 0), 0);
+        const totalCorrectFromCategories = Object.values(data.categoryStats || {}).reduce((acc: number, curr: any) => acc + (curr.correct || 0), 0) as number;
 
         const hasCategoryStats = Object.keys(data.categoryStats || {}).length > 0;
 
@@ -137,7 +137,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
   const renderIcon = (iconName: string | undefined, className = "w-5 h-5") => {
     if (!iconName) return <Award className={className} />;
     if (iconName.startsWith('http')) return <img src={iconName} className={cn("object-contain", className)} />;
-    return ICON_MAP[iconName] ? React.cloneElement(ICON_MAP[iconName] as React.ReactElement, { className }) : <Award className={className} />;
+    return ICON_MAP[iconName] ? React.cloneElement(ICON_MAP[iconName] as React.ReactElement<any>, { className }) : <Award className={className} />;
   };
 
   const getNextTitleInfo = () => {

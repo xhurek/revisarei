@@ -330,7 +330,7 @@ export function AdminView() {
         return <img src={iconName} alt="Title Icon" className="w-5 h-5 object-contain" />;
     }
     const option = ICON_OPTIONS.find(o => o.name === iconName);
-    return option ? React.cloneElement(option.icon as React.ReactElement, { className: 'w-5 h-5' }) : <Award className="w-5 h-5" />;
+    return option ? React.cloneElement(option.icon as React.ReactElement<any>, { className: 'w-5 h-5' }) : <Award className="w-5 h-5" />;
   };
 
   return (

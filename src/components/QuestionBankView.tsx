@@ -287,28 +287,30 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
               <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">EXPLORE E RESPONDA</h2>
               <div className="flex items-center gap-3 mt-1">
                 <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4">Banco de Questões</h1>
-                <span className="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black">{questions.length} Questões</span>
+                <span className="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black">{questions.length} <span className="hidden sm:inline">Questões</span></span>
               </div>
             </div>
             
-            {isAdmin && (
-              <div className="flex gap-2 flex-wrap">
-                <button 
-                  onClick={() => setIsCreateQuizModalOpen(true)}
-                  className="flex items-center gap-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-4 py-2.5 rounded-xl font-bold border border-indigo-200 transition shadow-sm"
-                >
-                  <BookOpen className="w-5 h-5" />
-                  Criar Caderno
-                </button>
+            <div className="flex gap-2 flex-wrap self-end sm:self-auto">
+              <button 
+                onClick={() => setIsCreateQuizModalOpen(true)}
+                className="flex items-center justify-center gap-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-4 py-2.5 rounded-xl font-bold border border-indigo-200 transition shadow-sm"
+              >
+                <BookOpen className="w-5 h-5" />
+                <span className="hidden sm:inline">Criar Caderno</span>
+                <span className="sm:hidden">Caderno</span>
+              </button>
+              {isAdmin && (
                 <button 
                   onClick={() => setIsAdding(true)}
-                  className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition"
+                  className="flex items-center justify-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition"
                 >
                   <Plus className="w-5 h-5" />
-                  Adicionar Questões
+                  <span className="hidden sm:inline">Adicionar Questões</span>
+                  <span className="sm:hidden">Adicionar</span>
                 </button>
-              </div>
-            )}
+              )}
+            </div>
 
           </div>
 
@@ -1879,7 +1881,7 @@ function QuestionEditor({
                                  const reader = new FileReader();
                                  reader.onload = (ev) => {
                                      if (ev.target?.result) {
-                                         setQ(prev => ({ ...prev, images: [...(prev.images || []), ev.target.result] }));
+                                         setQ(prev => ({ ...prev, images: [...(prev.images || []), ev.target.result as string] }));
                                      }
                                  };
                                  reader.readAsDataURL(blob);
