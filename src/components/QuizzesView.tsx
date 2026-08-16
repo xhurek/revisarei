@@ -53,8 +53,11 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
   const [availableTags, setAvailableTags] = useState<BankTagItem[]>(() => getCachedBankTags());
   const [bankQuestions, setBankQuestions] = useState<any[]>(() => {
     try {
-      const stored = sessionStorage.getItem('cached_questionBank');
-      if (stored) return JSON.parse(stored);
+      const stored = sessionStorage.getItem('cached_full_questionBank');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 40) return parsed;
+      }
     } catch {}
     return [];
   });
@@ -74,23 +77,14 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if ((isCreateQuizModalOpen || isCreating) && bankQuestions.length === 0) {
-      try {
-        const stored = sessionStorage.getItem('cached_questionBank');
-        if (stored) {
-          setBankQuestions(JSON.parse(stored));
-        } else {
-          getDocs(collection(db, 'questionBank')).then(snap => {
-            const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setBankQuestions(list);
-            try { sessionStorage.setItem('cached_questionBank', JSON.stringify(list)); } catch {}
-          }).catch(err => {
-            console.error("Error loading bankQuestions for quiz modal:", err);
-          });
-        }
-      } catch (err) {
-        console.error(err);
-      }
+    if ((isCreateQuizModalOpen || isCreating) && bankQuestions.length <= 40) {
+      getDocs(collection(db, 'questionBank')).then(snap => {
+        const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setBankQuestions(list);
+        try { sessionStorage.setItem('cached_full_questionBank', JSON.stringify(list)); } catch {}
+      }).catch(err => {
+        console.error("Error loading full bankQuestions for quiz modal:", err);
+      });
     }
   }, [isCreateQuizModalOpen, isCreating, bankQuestions.length]);
 
@@ -204,6 +198,15 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
 
   useEffect(() => {
     fetchQuizzes();
+
+    const handleQuizCreated = () => {
+      if (auth.currentUser) {
+        delete memoryCachedQuizzes[auth.currentUser.uid];
+      }
+      fetchQuizzes();
+    };
+    window.addEventListener('quiz_created', handleQuizCreated);
+    return () => window.removeEventListener('quiz_created', handleQuizCreated);
   }, []);
 
   useEffect(() => {
@@ -619,9 +622,9 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
           ) : selectedFolder === null ? (
             <motion.div
               key="folder-list"
-              initial={{ opacity: 0, x: -20 }}
+              initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
+              exit={{ opacity: 0, x: -20 }}
               transition={{ duration: 0.3 }}
               className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4"
             >

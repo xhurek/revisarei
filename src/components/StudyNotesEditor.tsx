@@ -353,43 +353,49 @@ export function StudyNotesEditor({ note, onSave, onBack, folderColor }: Props) {
         </div>
       )}
       {/* Top Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 shadow-sm shrink-0">
-        <div className="max-w-4xl mx-auto flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <button onClick={onBack} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition shrink-0" title="Voltar (sem salvar)">
+      <header className="bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 sm:px-6 py-3 shadow-sm shrink-0 sticky top-0 z-50 flex items-center min-h-[57px]">
+        <div className="max-w-4xl mx-auto w-full flex items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+            <button onClick={onBack} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition shrink-0" title="Voltar (sem salvar)">
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <div className="flex flex-col">
-               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-400 ml-4 mb-1 uppercase tracking-wider">
-                 <FileText className="w-3 h-3" />
-                 {note.folder}
-               </div>
-               <input
+            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
+              <div className="inline-grid items-center min-w-0 max-w-[180px] sm:max-w-xs md:max-w-md shrink">
+                {/* Hidden mirror span to accurately size the input to the exact text width */}
+                <span className={`invisible col-start-1 row-start-1 font-bold text-base sm:text-lg text-slate-900 border-l-4 ${folderColor ? folderColor.replace('bg-', 'border-') : 'border-emerald-500'} pl-2.5 sm:pl-3 whitespace-pre select-none pointer-events-none truncate overflow-hidden`}>
+                  {title || 'Título do Caderno'}
+                </span>
+                <input
                   type="text"
                   value={title}
                   onChange={e => setTitle(e.target.value)}
-                  className={`font-bold text-2xl md:text-3xl text-slate-900 bg-transparent outline-none border-l-4 ${folderColor ? folderColor.replace('bg-', 'border-') : 'border-emerald-500'} pl-4 w-48 sm:w-64 md:w-96`}
+                  className={`col-start-1 row-start-1 font-bold text-base sm:text-lg text-slate-900 bg-transparent outline-none border-l-4 ${folderColor ? folderColor.replace('bg-', 'border-') : 'border-emerald-500'} pl-2.5 sm:pl-3 w-full`}
                   placeholder="Título do Caderno"
-               />
+                />
+              </div>
+              <div className="inline-flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 border border-slate-200 text-xs font-semibold shrink-0" title={`Pasta: ${note.folder}`}>
+                <FileText className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                <span className="truncate max-w-[80px] sm:max-w-[120px] md:max-w-[180px]">{note.folder}</span>
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setShowPublicModal(true)}
               className={cn(
-                "flex items-center gap-1.5 px-3 md:px-4 py-2 md:py-2.5 rounded-xl font-bold text-xs md:text-sm transition border shrink-0",
+                "flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl font-bold text-xs sm:text-sm transition border shrink-0",
                 isPublic
                   ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
                   : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 hover:text-slate-900"
               )}
               title="Gerenciar visibilidade pública no Mundo"
             >
-              <Globe className={cn("w-4 h-4", isPublic ? "text-emerald-600" : "text-slate-400")} />
+              <Globe className={cn("w-4 h-4 shrink-0", isPublic ? "text-emerald-600" : "text-slate-400")} />
               <span className="hidden sm:inline">{isPublic ? 'Público no Mundo' : 'Compartilhar'}</span>
             </button>
 
-            <button onClick={() => handleSave()} disabled={isSaving} className="flex items-center gap-2 bg-emerald-600 text-white px-4 md:px-5 py-2 md:py-2.5 rounded-xl font-bold hover:bg-emerald-700 transition shadow-sm disabled:opacity-70 w-auto md:w-32 justify-center shrink-0">
+            <button onClick={() => handleSave()} disabled={isSaving} className="flex items-center gap-1.5 bg-emerald-600 text-white px-3 sm:px-4 py-1.5 rounded-xl font-bold text-xs sm:text-sm hover:bg-emerald-700 transition shadow-xs disabled:opacity-70 justify-center shrink-0">
               {savedVisible ? (
                  <><Check className="w-4 h-4" /><span className="hidden md:inline">Salvo!</span></>
               ) : isSaving ? (

@@ -9,6 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Brain, Trophy, Check, X, ShieldAlert, Book, Tag as TagIcon, Play, Upload, Edit3, Trash2, Plus, Layout } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { FlashcardCreator } from './FlashcardCreator';
+import { showToast } from '../lib/toast';
 
 // Cache for loaded media files to avoid duplicate Firestore queries
 const mediaCache: Record<string, string> = {};
@@ -209,7 +210,6 @@ export function FlashcardsRoom() {
   const [loading, setLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
-  const [showTudoEmDia, setShowTudoEmDia] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -289,9 +289,11 @@ export function FlashcardsRoom() {
       
       const dueCount = fetchedCards.filter(c => new Date(c.nextReview).getTime() <= Date.now()).length;
       if (dueCount === 0 && fetchedCards.length > 0) {
-        setShowTudoEmDia(true);
-      } else {
-        setShowTudoEmDia(false);
+        showToast({
+          title: 'Tudo em dia!',
+          description: 'Flashcards revisados',
+          icon: 'trophy'
+        });
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, 'flashcards');
@@ -1164,28 +1166,6 @@ export function FlashcardsRoom() {
           </div>
           
           <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" accept=".apkg,.colpkg" />
-
-          <AnimatePresence>
-            {showTudoEmDia && (
-              <motion.div 
-                initial={{ opacity: 0, y: -20, scale: 0.95 }} 
-                animate={{ opacity: 1, y: 0, scale: 1 }} 
-                exit={{ opacity: 0, y: -20, scale: 0.95 }}
-                className="fixed top-24 left-1/2 -translate-x-1/2 w-[calc(100%-3rem)] md:w-96 bg-white border border-slate-200 p-4 rounded-2xl shadow-2xl z-[60] flex items-center gap-4"
-              >
-                <div className="w-10 h-10 bg-indigo-50 rounded-full flex items-center justify-center shrink-0">
-                  <Trophy className="w-5 h-5 text-indigo-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-bold text-slate-900 text-sm">Tudo em dia!</p>
-                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Flashcards revisados</p>
-                </div>
-                <button onClick={() => setShowTudoEmDia(false)} className="p-2 hover:bg-slate-100 text-slate-400 rounded-lg transition">
-                  <X className="w-4 h-4" />
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
         </header>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

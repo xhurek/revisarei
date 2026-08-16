@@ -1,6 +1,6 @@
 import { CreateQuizModal } from './CreateQuizModal';
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, getDocs, addDoc, doc, deleteDoc, updateDoc, query, orderBy, limit, onSnapshot, getDoc, where } from 'firebase/firestore';
+import { collection, getCountFromServer, getDocs, addDoc, doc, deleteDoc, updateDoc, query, orderBy, limit, onSnapshot, getDoc, where, startAfter } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType, apiFetch, parseJsonResponse } from '../lib/firebase';
 import { BankQuestion } from '../types';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -16,7 +16,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
   const [questions, setQuestions] = useState<BankQuestion[]>(() => {
     if (memoryCachedQuestions && memoryCachedQuestions.length > 0) return memoryCachedQuestions;
     try {
-      const stored = sessionStorage.getItem('cached_questionBank');
+      const stored = sessionStorage.getItem('cached_admin_questionBank');
       if (stored) return JSON.parse(stored);
     } catch {
       // ignore
@@ -24,6 +24,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
     return [];
   });
   const [loading, setLoading] = useState(!memoryCachedQuestions || memoryCachedQuestions.length === 0);
+  const [totalQuestionsCount, setTotalQuestionsCount] = useState<number | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [isManagingTags, setIsManagingTags] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -45,6 +46,29 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
   const [comments, setComments] = useState<any[]>([]);
   const [newComment, setNewComment] = useState('');
   const [userData, setUserData] = useState<any>(null);
+
+  const [modalBankQuestions, setModalBankQuestions] = useState<BankQuestion[]>(() => {
+    try {
+      const stored = sessionStorage.getItem('cached_full_questionBank');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 40) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  useEffect(() => {
+    if (isCreateQuizModalOpen && modalBankQuestions.length <= 40) {
+      getDocs(collection(db, 'questionBank')).then(snap => {
+        const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankQuestion));
+        setModalBankQuestions(list);
+        try { sessionStorage.setItem('cached_full_questionBank', JSON.stringify(list)); } catch {}
+      }).catch(err => {
+        console.error("Error loading questions for quiz modal:", err);
+      });
+    }
+  }, [isCreateQuizModalOpen, modalBankQuestions.length]);
 
   useEffect(() => {
     if (isCreateQuizModalOpen) {
@@ -139,28 +163,16 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
 
   const [revealedAnswers, setRevealedAnswers] = useState<Record<string, boolean>>({});
 
+  const [lastVisible, setLastVisible] = useState<any>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+
   useEffect(() => {
-    // Check memory cache first
-    if (memoryCachedQuestions && memoryCachedQuestions.length > 0) {
-      setQuestions(memoryCachedQuestions);
-      setLoading(false);
-    } else {
-      // Try to load from sessionStorage
-      try {
-        const stored = sessionStorage.getItem('cached_questionBank');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          memoryCachedQuestions = parsed;
-          setQuestions(parsed);
-          setLoading(false);
-        } else {
-          // If neither, fetch from Firestore
-          fetchQuestions();
-        }
-      } catch {
-        fetchQuestions();
-      }
-    }
+    getCountFromServer(collection(db, 'questionBank')).then(snap => {
+      setTotalQuestionsCount(snap.data().count);
+    }).catch(err => {
+      console.warn("Could not load total questions count:", err);
+    });
 
     if (!hasCachedBankTags()) {
       getDocs(collection(db, 'bankTags')).then(snap => {
@@ -186,34 +198,93 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
     };
     window.addEventListener('bank_tags_updated', handleTagsUpdated);
 
+    if (isAdmin) {
+      if (memoryCachedQuestions && memoryCachedQuestions.length > 0) {
+        setQuestions(memoryCachedQuestions);
+        setLoading(false);
+      } else {
+        fetchAdminQuestions();
+      }
+    } else {
+      setLoading(false);
+    }
+
     return () => {
       window.removeEventListener('bank_tags_updated', handleTagsUpdated);
     };
-  }, []);
+  }, [isAdmin]);
 
-  const fetchQuestions = async () => {
+  const fetchAdminQuestions = async (isLoadMore = false) => {
+    if (!isLoadMore) setLoading(true);
+    else setLoadingMore(true);
+
     try {
-      const snap = await getDocs(collection(db, 'questionBank'));
-      const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankQuestion));
-      list.sort((a, b) => {
-        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return timeB - timeA;
-      });
-      memoryCachedQuestions = list;
-      try {
-        sessionStorage.setItem('cached_questionBank', JSON.stringify(list));
-      } catch {
-        // ignore
+      let loaded: BankQuestion[] = [];
+      if (!isLoadMore) {
+        const flaggedQ = query(collection(db, 'questionBank'), where('hasImageWarning', '==', true), limit(20));
+        const flaggedSnap = await getDocs(flaggedQ);
+        loaded = flaggedSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankQuestion));
       }
-      setQuestions(list);
+
+      let normalQ = query(collection(db, 'questionBank'), orderBy('createdAt', 'desc'), limit(30));
+      if (isLoadMore && lastVisible) {
+        normalQ = query(collection(db, 'questionBank'), orderBy('createdAt', 'desc'), startAfter(lastVisible), limit(30));
+      }
+
+      const snap = await getDocs(normalQ);
+      if (!snap.empty) {
+        setLastVisible(snap.docs[snap.docs.length - 1]);
+        const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankQuestion));
+        
+        const all = isLoadMore ? [...questions, ...list] : [...loaded, ...list];
+        // deduplicate
+        const unique = Array.from(new Map(all.map(item => [item.id, item])).values());
+        
+        memoryCachedQuestions = unique;
+        try { sessionStorage.setItem('cached_admin_questionBank', JSON.stringify(unique)); } catch {}
+        setQuestions(unique);
+      } else if (!isLoadMore) {
+        memoryCachedQuestions = loaded;
+        setQuestions(loaded);
+      }
       setLoading(false);
+      setLoadingMore(false);
       setQuotaExceeded(false);
     } catch (err: any) {
       console.error("Error refreshing questionBank:", err);
-      if (err?.message?.includes('Quota limit exceeded')) {
-        setQuotaExceeded(true);
+      if (err?.message?.includes('Quota limit exceeded')) setQuotaExceeded(true);
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  };
+
+  const fetchQuestions = () => {
+    if (isAdmin) fetchAdminQuestions();
+  };
+
+  const handleUserSearch = async () => {
+    if (!filterMainTag && !search.trim() && !filterInstitution.trim() && !filterYear.trim() && !filterSubtag) {
+      alert("Para pesquisar, selecione pelo menos um filtro ou digite um termo.");
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      let q;
+      if (filterMainTag) {
+        q = query(collection(db, 'questionBank'), where('mainTag', '==', filterMainTag), limit(1000));
+      } else {
+        q = query(collection(db, 'questionBank'), limit(1000));
       }
+
+      const snap = await getDocs(q);
+      const list = snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as BankQuestion));
+      setQuestions(list);
+      setHasSearched(true);
+      setQuotaExceeded(false);
+    } catch (err: any) {
+      console.error(err);
+      if (err?.message?.includes('Quota limit exceeded')) setQuotaExceeded(true);
     } finally {
       setLoading(false);
     }
@@ -276,17 +347,31 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
     setRevealedAnswers(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const uniqueMainTags = Array.from(new Set([...questions.map(q => q.mainTag), ...availableTags.map(t => t.name)])).filter((x): x is string => Boolean(x)).sort();
-  const uniqueSubtags = Array.from(new Set(questions.flatMap(q => q.subtags || (q.subtag ? [q.subtag] : [])))).filter((x): x is string => Boolean(x)).sort();
-  const uniqueInstitutions = Array.from(new Set(questions.map(q => q.institution))).filter((x): x is string => Boolean(x)).sort();
-  const uniqueYears = Array.from(new Set(questions.map(q => q.year))).filter((x): x is string => Boolean(x)).sort();
+  const uniqueMainTags = Array.from(new Set(availableTags.map(t => t.name))).filter((x): x is string => Boolean(x)).sort();
+  const uniqueSubtags = Array.from(new Set(
+    filterMainTag 
+      ? availableTags.find(t => t.name === filterMainTag)?.subtags || []
+      : availableTags.flatMap(t => t.subtags)
+  )).filter((x): x is string => Boolean(x)).sort();
+  
+  // uniqueInstitutions and uniqueYears are removed since we are changing to text inputs
+
+  const modalQuestionsToUse = modalBankQuestions.length > 0 ? modalBankQuestions : questions;
 
   const filtered = questions.filter(q => {
-    if (search && !q.text.toLowerCase().includes(search.toLowerCase()) && !q.subtag?.toLowerCase().includes(search.toLowerCase()) && !q.subtags?.some(s => s.toLowerCase().includes(search.toLowerCase()))) return false;
+    const s = search.toLowerCase().trim();
+    if (s) {
+      const inText = q.text?.toLowerCase().includes(s);
+      const inSubtag = q.subtag?.toLowerCase().includes(s);
+      const inSubtags = q.subtags?.some(sub => sub.toLowerCase().includes(s));
+      const inInst = q.institution?.toLowerCase().includes(s);
+      const inYear = String(q.year || '').toLowerCase().includes(s);
+      if (!inText && !inSubtag && !inSubtags && !inInst && !inYear) return false;
+    }
     if (filterMainTag && q.mainTag !== filterMainTag) return false;
     if (filterSubtag && !(q.subtags?.includes(filterSubtag) || q.subtag === filterSubtag)) return false;
-    if (filterInstitution && q.institution !== filterInstitution) return false;
-    if (filterYear && q.year !== filterYear) return false;
+    if (filterInstitution.trim() && !q.institution?.toLowerCase().includes(filterInstitution.toLowerCase().trim())) return false;
+    if (filterYear.trim() && !String(q.year || '').toLowerCase().includes(filterYear.toLowerCase().trim())) return false;
     
     if (filterImageText) {
       const imageKeywordsRegex = /\b(imagem|figura|gr[áa]fico|radiografia|ecocardiograma|ecg|esquema|foto|exame)\b/i;
@@ -301,17 +386,21 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
   return (
     <div className="space-y-8 w-full max-w-4xl mx-auto">
       
-      
-            
       <CreateQuizModal 
         isOpen={isCreateQuizModalOpen}
         onClose={() => setIsCreateQuizModalOpen(false)}
-        questions={questions}
+        questions={modalQuestionsToUse}
         userFolders={userFolders}
-        uniqueMainTags={uniqueMainTags}
-        uniqueSubtags={uniqueSubtags}
-        uniqueInstitutions={uniqueInstitutions}
-        uniqueYears={uniqueYears}
+        uniqueMainTags={Array.from(new Set([
+          ...availableTags.map(t => t.name),
+          ...modalQuestionsToUse.map(q => q.mainTag)
+        ])).filter(Boolean).sort()}
+        uniqueSubtags={Array.from(new Set([
+          ...availableTags.flatMap(t => t.subtags),
+          ...modalQuestionsToUse.flatMap(q => q.subtags || (q.subtag ? [q.subtag] : []))
+        ])).filter(Boolean).sort()}
+        uniqueInstitutions={Array.from(new Set(modalQuestionsToUse.map(q => q.institution).filter(Boolean))).sort()}
+        uniqueYears={Array.from(new Set(modalQuestionsToUse.map(q => q.year).filter(Boolean))).sort()}
         auth={auth}
         db={db}
       />
@@ -330,7 +419,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
               <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">EXPLORE E RESPONDA</h2>
               <div className="flex flex-wrap items-center gap-3 mt-1">
                 <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4">Banco de Questões</h1>
-                <span className="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black whitespace-nowrap shrink-0">{questions.length} <span className="hidden sm:inline">Questões</span></span>
+                <span className="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black whitespace-nowrap shrink-0">{totalQuestionsCount !== null ? totalQuestionsCount : '...'} <span className="hidden sm:inline">Questões no Banco</span></span>
               </div>
             </div>
             
@@ -365,6 +454,11 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
                 placeholder="Buscar no enunciado ou subárea..." 
                 value={search}
                 onChange={e => setSearch(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !isAdmin) {
+                    handleUserSearch();
+                  }
+                }}
                 className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-indigo-600/20"
               />
             </div>
@@ -388,45 +482,64 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
                 <option key={i} value={sub}>{sub}</option>
               ))}
             </select>
-            <select 
+            <input 
+              type="text"
+              placeholder="Banca (Ex: USP)"
               value={filterInstitution}
               onChange={e => setFilterInstitution(e.target.value)}
-              className="flex-1 min-w-[180px] px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-indigo-600/20"
-            >
-              <option value="">Todas as Bancas</option>
-              {uniqueInstitutions.map((inst, i) => (
-                <option key={i} value={inst}>{inst}</option>
-              ))}
-            </select>
-            <select 
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !isAdmin) {
+                  handleUserSearch();
+                }
+              }}
+              className="flex-1 min-w-[150px] px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-indigo-600/20"
+            />
+            <input 
+              type="text"
+              placeholder="Ano (Ex: 2024)"
               value={filterYear}
               onChange={e => setFilterYear(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !isAdmin) {
+                  handleUserSearch();
+                }
+              }}
               className="flex-1 min-w-[120px] px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-indigo-600/20"
-            >
-              <option value="">Todos os Anos</option>
-              {uniqueYears.map((yr, i) => (
-                <option key={i} value={yr}>{yr}</option>
-              ))}
-            </select>
-            <select 
-              value={filterImageText}
-              onChange={e => setFilterImageText(e.target.value)}
-              className="flex-1 min-w-[200px] px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-indigo-600/20"
-            >
-              <option value="">Status da Imagem (Todos)</option>
-              <option value="true">Com menção à imagem/exame</option>
-              <option value="false">Sem menção à imagem</option>
-            </select>
+            />
+            {isAdmin && (
+              <select 
+                value={filterImageText}
+                onChange={e => setFilterImageText(e.target.value)}
+                className="flex-1 min-w-[200px] px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-indigo-600/20"
+              >
+                <option value="">Status da Imagem (Todos)</option>
+                <option value="true">Com menção à imagem/exame</option>
+                <option value="false">Sem menção à imagem</option>
+              </select>
+            )}
+            {!isAdmin && (
+              <button 
+                onClick={handleUserSearch}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-bold rounded-xl shadow-md hover:bg-indigo-700 transition"
+              >
+                Pesquisar
+              </button>
+            )}
           </div>
-
-
-
 
           <div className="space-y-4">
             {loading ? (
               <p className="text-slate-400 text-center py-10 font-bold">Carregando...</p>
+            ) : !isAdmin && !hasSearched && questions.length === 0 ? (
+              <div className="text-center py-20 px-4 bg-white rounded-3xl border border-slate-100 shadow-sm">
+                <Brain className="w-16 h-16 text-indigo-200 mx-auto mb-4" />
+                <h3 className="text-xl font-black text-slate-800 mb-2">Pronto para estudar?</h3>
+                <p className="text-slate-500 max-w-md mx-auto leading-relaxed">
+                  Para responder as questões crie um caderno e selecione as temáticas desejadas ou então pesquise uma questão específica pelo enunciado utilizando os filtros acima.
+                </p>
+              </div>
             ) : filtered.length === 0 ? (
-              <p className="text-slate-400 text-center py-10 font-bold">Nenhuma questão encontrada.</p>
+              <p className="text-slate-400 text-center py-10 font-bold">Nenhuma questão encontrada com estes filtros.</p>
             ) : (
               filtered.map(q => {
                 if (editingId === q.id) {
@@ -588,6 +701,23 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
               );
             })
             )}
+
+            {isAdmin && lastVisible && !loadingMore && filtered.length > 0 && (
+              <div className="flex justify-center mt-6 mb-8 pt-4 border-t border-slate-100">
+                <button
+                  onClick={() => fetchAdminQuestions(true)}
+                  className="px-8 py-3 bg-indigo-50 text-indigo-700 font-bold rounded-xl border border-indigo-100 shadow-sm hover:bg-indigo-100 hover:scale-105 transition-all"
+                >
+                  Carregar Mais Questões
+                </button>
+              </div>
+            )}
+            {loadingMore && (
+              <div className="flex justify-center mt-6 mb-8 pt-4 border-t border-slate-100">
+                <span className="px-8 py-3 text-indigo-400 font-bold">Carregando mais...</span>
+              </div>
+            )}
+
           </div>
         </>
       ) : (

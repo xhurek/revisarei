@@ -15,7 +15,7 @@ import { CommunityView } from './components/CommunityView';
 import { AdminView } from './components/AdminView';
 import { ReportErrorModal } from './components/ReportErrorModal';
 import { AnimatePresence, motion } from 'motion/react';
-import { LogOut, BookOpen, Brain, FileText, LayoutDashboard, Tablet, Globe, Bell, User as UserIcon, Layers, Shield, MessageSquare, AlertCircle, Database } from 'lucide-react';
+import { LogOut, BookOpen, Brain, FileText, LayoutDashboard, Tablet, Globe, Bell, User as UserIcon, Layers, Shield, MessageSquare, AlertCircle, Database, X, CheckCircle2, Trophy, Sparkles, Info } from 'lucide-react';
 import { cn } from './lib/utils';
 import { DEFAULT_TITLES, getCachedTitles, setCachedTitles, hasCachedTitles } from './lib/staticCache';
 
@@ -68,6 +68,58 @@ export default function App() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showReportModal, setShowReportModal] = useState(false);
   const [menuVisible, setMenuVisible] = useState(true);
+  const [toastNotification, setToastNotification] = useState<{
+    id: string;
+    title: string;
+    description: string;
+    icon?: 'trophy' | 'book' | 'check' | 'bell' | 'sparkles' | 'info';
+  } | null>(null);
+
+  useEffect(() => {
+    let timer: any = null;
+
+    const handleToast = (e: any) => {
+      const detail = e.detail || {};
+      setToastNotification({
+        id: detail.id || Math.random().toString(),
+        title: detail.title || '',
+        description: detail.description || '',
+        icon: detail.icon || 'check'
+      });
+
+      if (timer) clearTimeout(timer);
+      const duration = detail.duration || 3000;
+      timer = setTimeout(() => {
+        setToastNotification(null);
+      }, duration);
+    };
+
+    const handleQuizCreated = (e: any) => {
+      const detail = e.detail || {};
+      const title = detail.title ? `Caderno "${detail.title}" criado!` : 'Caderno criado com sucesso!';
+      const description = detail.count ? `${detail.count} questões prontas para resolver` : 'Pronto para estudar';
+      
+      setToastNotification({
+        id: Math.random().toString(),
+        title,
+        description,
+        icon: 'book'
+      });
+
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setToastNotification(null);
+      }, 3000);
+    };
+
+    window.addEventListener('app_toast', handleToast);
+    window.addEventListener('quiz_created', handleQuizCreated);
+    return () => {
+      window.removeEventListener('app_toast', handleToast);
+      window.removeEventListener('quiz_created', handleQuizCreated);
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     let prevScrollY = window.scrollY;
@@ -821,6 +873,41 @@ export default function App() {
         onClose={() => setShowReportModal(false)} 
         currentPage={currentView} 
       />
+
+      {/* Floating Animated Toast Notification */}
+      <div className="fixed bottom-6 left-0 right-0 z-[9999] flex justify-center pointer-events-none px-4">
+        <AnimatePresence>
+          {toastNotification && (
+            <motion.div 
+              key={toastNotification.id}
+              initial={{ opacity: 0, y: 40, scale: 0.95 }} 
+              animate={{ opacity: 1, y: 0, scale: 1 }} 
+              exit={{ opacity: 0, y: 40, scale: 0.95 }}
+              transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+              className="w-full max-w-md bg-emerald-50 border border-emerald-200 p-4 rounded-2xl shadow-xl shadow-emerald-950/10 flex items-center gap-4 pointer-events-auto"
+            >
+              <div className="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center shrink-0 border border-emerald-200">
+                {toastNotification.icon === 'trophy' && <Trophy className="w-5 h-5 text-emerald-700" />}
+                {toastNotification.icon === 'book' && <BookOpen className="w-5 h-5 text-emerald-700" />}
+                {toastNotification.icon === 'bell' && <Bell className="w-5 h-5 text-emerald-700" />}
+                {toastNotification.icon === 'sparkles' && <Sparkles className="w-5 h-5 text-emerald-700" />}
+                {toastNotification.icon === 'info' && <Info className="w-5 h-5 text-emerald-700" />}
+                {(!toastNotification.icon || toastNotification.icon === 'check') && <CheckCircle2 className="w-5 h-5 text-emerald-700" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-emerald-950 text-sm truncate">{toastNotification.title}</p>
+                <p className="text-[11px] text-emerald-700 font-bold uppercase tracking-wider truncate">{toastNotification.description}</p>
+              </div>
+              <button 
+                onClick={() => setToastNotification(null)} 
+                className="p-1.5 hover:bg-emerald-100 text-emerald-600 hover:text-emerald-800 rounded-lg transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }

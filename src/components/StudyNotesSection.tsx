@@ -364,7 +364,14 @@ export function StudyNotesSection() {
       )}
 
       {selectedFolder === null ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        <motion.div
+          key="folder-list"
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -20 }}
+          transition={{ duration: 0.3 }}
+          className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4"
+        >
           {folders.map(folder => {
             const count = notes.filter(n => n.folder === folder).length;
             const defaultColors = ['bg-emerald-500', 'bg-teal-500', 'bg-cyan-500', 'bg-lime-500', 'bg-green-500'];
@@ -433,7 +440,7 @@ export function StudyNotesSection() {
                Nenhum caderno de estudo. Crie ou importe um novo.
             </div>
           )}
-        </div>
+        </motion.div>
       ) : (
         <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.3 }} className="space-y-6">
            <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
