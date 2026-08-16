@@ -269,7 +269,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
           <Edit2 className="w-4 h-4" />
         </button>
         
-        <div className="relative">
+        <div className="relative shrink-0 ml-1 sm:ml-2">
           <div className="w-16 h-16 bg-slate-100 rounded-full border-2 border-white shadow-sm overflow-hidden shrink-0 flex items-center justify-center">
             {auth.currentUser?.photoURL ? (
               <img src={auth.currentUser.photoURL} alt="Profile" className="w-full h-full object-cover" />
@@ -286,9 +286,9 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
 
         <div className="flex-1 flex flex-col md:flex-row md:items-center justify-between w-full gap-4">
           <div>
-            <div className="flex flex-col md:flex-row md:items-center gap-2">
-              <h2 className="text-lg font-bold text-slate-900">Olá, {auth.currentUser?.displayName?.split(' ')[0] || 'Estudante'}!</h2>
-              <span className={cn("inline-flex text-[10px] font-black uppercase px-2 py-0.5 rounded-full border shadow-2xs", colorParts[0], colorParts[1], colorParts[2])}>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-bold text-slate-900 whitespace-nowrap">Olá, {auth.currentUser?.displayName?.split(' ')[0] || 'Estudante'}!</h2>
+              <span className={cn("inline-flex items-center whitespace-nowrap text-[10px] font-black uppercase px-2 py-0.5 rounded-full border shadow-2xs shrink-0", colorParts[0], colorParts[1], colorParts[2])}>
                 {userData?.title || nextTitleInfo.currentTitle}
               </span>
             </div>

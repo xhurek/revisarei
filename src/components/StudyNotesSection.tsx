@@ -60,7 +60,9 @@ export function StudyNotesSection() {
   const handleCreateNew = () => {
     setIsCreating(true);
     setTimeout(() => {
-      window.scrollBy({ top: 300, behavior: 'smooth' });
+      if (window.scrollY < 250) {
+        window.scrollBy({ top: 300, behavior: 'smooth' });
+      }
     }, 100);
   };
 

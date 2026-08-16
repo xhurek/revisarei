@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { auth, db, signInWithGoogle, testConnection, handleFirestoreError, OperationType } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, updateDoc, setDoc, increment, collection, onSnapshot, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, setDoc, increment, collection, onSnapshot, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { View, Quiz, UserProfile, TitleDefinition } from './types';
 import { LoginView } from './components/LoginView';
 import { Dashboard } from './components/Dashboard';
@@ -17,22 +17,14 @@ import { ReportErrorModal } from './components/ReportErrorModal';
 import { AnimatePresence, motion } from 'motion/react';
 import { LogOut, BookOpen, Brain, FileText, LayoutDashboard, Tablet, Globe, Bell, User as UserIcon, Layers, Shield, MessageSquare, AlertCircle, Database } from 'lucide-react';
 import { cn } from './lib/utils';
+import { DEFAULT_TITLES, getCachedTitles, setCachedTitles, hasCachedTitles } from './lib/staticCache';
 
-export const DEFAULT_TITLES: TitleDefinition[] = [
-  { id: 't1', name: 'Calouro', requirement: 0, criteria: 'total_questions', icon: 'User', color: 'bg-slate-50|text-slate-600|border-slate-200' },
-  { id: 't2', name: 'Café-com-leite', requirement: 250, criteria: 'total_questions', icon: 'Sparkles', color: 'bg-orange-50|text-orange-600|border-orange-100' },
-  { id: 't3', name: 'Aprendiz', requirement: 500, criteria: 'total_questions', icon: 'GraduationCap', color: 'bg-emerald-50|text-emerald-600|border-emerald-100' },
-  { id: 't4', name: 'Estudante', requirement: 1000, criteria: 'total_questions', icon: 'Brain', color: 'bg-blue-50|text-blue-600|border-blue-100' },
-  { id: 't5', name: 'Interno de Plantão', requirement: 2000, criteria: 'total_questions', icon: 'Stethoscope', color: 'bg-indigo-50|text-indigo-600|border-indigo-100' },
-  { id: 't6', name: 'Sabe muito', requirement: 4000, criteria: 'total_questions', icon: 'Flame', color: 'bg-rose-50|text-rose-600|border-rose-100' },
-  { id: 't7', name: 'Lenda', requirement: 7000, criteria: 'total_questions', icon: 'Trophy', color: 'bg-amber-50|text-amber-600|border-amber-100' },
-  { id: 't8', name: 'Gênio', requirement: 10000, criteria: 'total_questions', icon: 'Zap', color: 'bg-violet-50|text-violet-600|border-violet-100' }
-];
+export { DEFAULT_TITLES };
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [userData, setUserData] = useState<UserProfile | null>(null);
-  const [titlesList, setTitlesList] = useState<TitleDefinition[]>([]);
+  const [titlesList, setTitlesList] = useState<TitleDefinition[]>(() => getCachedTitles());
   const [loading, setLoading] = useState(true);
   const [currentView, setCurrentView] = useState<View>(() => {
     try {
@@ -108,10 +100,12 @@ export default function App() {
   const [isDraggingMenu, setIsDraggingMenu] = useState(false);
   const [startX, setStartX] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
+  const dragDistanceRef = useRef(0);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!menuScrollRef.current) return;
     setIsDraggingMenu(true);
+    dragDistanceRef.current = 0;
     setStartX(e.pageX - menuScrollRef.current.offsetLeft);
     setScrollLeft(menuScrollRef.current.scrollLeft);
   };
@@ -128,8 +122,29 @@ export default function App() {
     if (!isDraggingMenu || !menuScrollRef.current) return;
     e.preventDefault();
     const x = e.pageX - menuScrollRef.current.offsetLeft;
-    const walk = (x - startX) * 2; // scroll-fast
+    const walk = (x - startX) * 1.5;
+    dragDistanceRef.current += Math.abs(walk);
     menuScrollRef.current.scrollLeft = scrollLeft - walk;
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (!menuScrollRef.current) return;
+    setIsDraggingMenu(true);
+    dragDistanceRef.current = 0;
+    setStartX(e.touches[0].pageX - menuScrollRef.current.offsetLeft);
+    setScrollLeft(menuScrollRef.current.scrollLeft);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isDraggingMenu || !menuScrollRef.current) return;
+    const x = e.touches[0].pageX - menuScrollRef.current.offsetLeft;
+    const walk = (x - startX) * 1.2;
+    dragDistanceRef.current += Math.abs(walk);
+    menuScrollRef.current.scrollLeft = scrollLeft - walk;
+  };
+
+  const handleTouchEnd = () => {
+    setIsDraggingMenu(false);
   };
 
   const isAdmin = user?.email === 'rmourari@ufpi.edu.br';
@@ -161,17 +176,24 @@ export default function App() {
       }
 
       if (u) {
-        // Fetch titles definitions once per session
-        try {
-          const titlesSnap = await getDocs(query(collection(db, 'titles'), orderBy('requirement', 'asc')));
-          if (titlesSnap.empty) {
+        // Cache-first: only query Firestore if not cached in localStorage
+        if (hasCachedTitles()) {
+          setTitlesList(getCachedTitles());
+        } else {
+          try {
+            const titlesSnap = await getDocs(query(collection(db, 'titles'), orderBy('requirement', 'asc')));
+            if (titlesSnap.empty) {
+              setCachedTitles(DEFAULT_TITLES);
+              setTitlesList(DEFAULT_TITLES);
+            } else {
+              const loaded = titlesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TitleDefinition));
+              setCachedTitles(loaded);
+              setTitlesList(loaded);
+            }
+          } catch (err) {
+            console.error("Error fetching titles definitions:", err);
             setTitlesList(DEFAULT_TITLES);
-          } else {
-            setTitlesList(titlesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TitleDefinition)));
           }
-        } catch (err) {
-          console.error("Error fetching titles definitions:", err);
-          setTitlesList(DEFAULT_TITLES);
         }
 
         // Subscribe to user profile in real-time
@@ -203,7 +225,8 @@ export default function App() {
         const q = query(
           collection(db, 'notifications'),
           where('userId', '==', u.uid),
-          orderBy('createdAt', 'desc')
+          orderBy('createdAt', 'desc'),
+          limit(50)
         );
         unsubscribeNotifs = onSnapshot(q, (snapshot) => {
           setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -223,9 +246,19 @@ export default function App() {
       setLoading(false);
     });
 
+    const handleTitlesUpdated = (e: any) => {
+      if (e.detail) {
+        setTitlesList(e.detail);
+      } else {
+        setTitlesList(getCachedTitles());
+      }
+    };
+    window.addEventListener('titles_updated', handleTitlesUpdated);
+
     return () => {
       unsubscribeAuth();
       if (unsubscribeNotifs) unsubscribeNotifs();
+      window.removeEventListener('titles_updated', handleTitlesUpdated);
     };
   }, []); // Run only once on mount
 
@@ -495,36 +528,55 @@ export default function App() {
             onMouseLeave={handleMouseLeave}
             onMouseUp={handleMouseUp}
             onMouseMove={handleMouseMove}
-            className="flex items-center overflow-x-auto justify-start sm:justify-center gap-2 lg:gap-8 py-3 px-4 w-full touch-pan-x select-none cursor-grab active:cursor-grabbing [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            className="flex items-center overflow-x-auto justify-start sm:justify-center gap-2 lg:gap-8 py-3 px-4 w-full touch-pan-x select-none cursor-grab active:cursor-grabbing [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] overscroll-x-contain"
+            style={{ WebkitOverflowScrolling: 'touch' }}
           >
             <div className="w-4 lg:w-6 shrink-0" aria-hidden="true" />
             <NavButton
               active={currentView === View.DASHBOARD}
-              onClick={() => setCurrentView(View.DASHBOARD)}
+              onClick={() => {
+                if (dragDistanceRef.current > 10) return;
+                setCurrentView(View.DASHBOARD);
+              }}
               icon={<Brain className="w-5 h-5" />}
               label="Avaliação Geral"
             />
             <NavButton
               active={currentView === View.BANK}
-              onClick={() => setCurrentView(View.BANK)}
+              onClick={() => {
+                if (dragDistanceRef.current > 10) return;
+                setCurrentView(View.BANK);
+              }}
               icon={<Database className="w-5 h-5" />}
               label="Banco de Questões"
             />
             <NavButton
               active={currentView === View.LANDING}
-              onClick={() => setCurrentView(View.LANDING)}
+              onClick={() => {
+                if (dragDistanceRef.current > 10) return;
+                setCurrentView(View.LANDING);
+              }}
               icon={<FileText className="w-5 h-5" />}
               label="Cadernos"
             />
             <NavButton
               active={currentView === View.FLASHCARDS}
-              onClick={() => setCurrentView(View.FLASHCARDS)}
+              onClick={() => {
+                if (dragDistanceRef.current > 10) return;
+                setCurrentView(View.FLASHCARDS);
+              }}
               icon={<Layers className="w-5 h-5" />}
               label="Flashcards"
             />
             <NavButton
               active={currentView === View.COMMUNITY}
-              onClick={() => setCurrentView(View.COMMUNITY)}
+              onClick={() => {
+                if (dragDistanceRef.current > 10) return;
+                setCurrentView(View.COMMUNITY);
+              }}
               icon={<Globe className="w-5 h-5" />}
               label="Mundo"
             />
@@ -532,7 +584,10 @@ export default function App() {
             {isAdmin && (
               <NavButton
                 active={currentView === View.ADMIN}
-                onClick={() => setCurrentView(View.ADMIN)}
+                onClick={() => {
+                  if (dragDistanceRef.current > 10) return;
+                  setCurrentView(View.ADMIN);
+                }}
                 icon={<Shield className="w-5 h-5" />}
                 label="Admin"
               />

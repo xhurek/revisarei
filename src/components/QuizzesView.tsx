@@ -8,6 +8,7 @@ import { cn } from '../lib/utils';
 import { CreateQuizModal } from './CreateQuizModal';
 import { AddQuestionsView } from './QuestionBankView';
 import { StudyNotesSection } from './StudyNotesSection';
+import { getCachedBankTags, BankTagItem } from '../lib/staticCache';
 
 export const PREDEFINED_MAIN_TAGS = [
   "Cardiologia",
@@ -44,30 +45,20 @@ interface QuizzesViewProps {
 
 
 
+let memoryCachedQuizzes: Record<string, Quiz[]> = {};
+
 export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: QuizzesViewProps) {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
-  const [availableTags, setAvailableTags] = useState<{ id: string, name: string, subtags: string[] }[]>([]);
-  const [bankQuestions, setBankQuestions] = useState<any[]>([]);
+  const [availableTags, setAvailableTags] = useState<BankTagItem[]>(() => getCachedBankTags());
+  const [bankQuestions, setBankQuestions] = useState<any[]>(() => {
+    try {
+      const stored = sessionStorage.getItem('cached_questionBank');
+      if (stored) return JSON.parse(stored);
+    } catch {}
+    return [];
+  });
 
-  useEffect(() => {
-    const qTags = collection(db, 'bankTags');
-    const unsubTags = onSnapshot(qTags, (snap) => {
-      if (!snap.empty) {
-        const loadedTags = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
-        loadedTags.sort((a, b) => a.name.localeCompare(b.name));
-        setAvailableTags(loadedTags);
-      }
-    });
-    
-    getDocs(collection(db, 'questionBank')).then(snap => {
-      setBankQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-
-    return () => unsubTags();
-  }, []);
-
-  
   // Calculate dynamic subtags
   const allExistingSubtags = Array.from(new Set(quizzes.flatMap(q => {
     const subtags = Array.isArray(q.subtags) ? q.subtags : 
@@ -81,6 +72,39 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if ((isCreateQuizModalOpen || isCreating) && bankQuestions.length === 0) {
+      try {
+        const stored = sessionStorage.getItem('cached_questionBank');
+        if (stored) {
+          setBankQuestions(JSON.parse(stored));
+        } else {
+          getDocs(collection(db, 'questionBank')).then(snap => {
+            const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setBankQuestions(list);
+            try { sessionStorage.setItem('cached_questionBank', JSON.stringify(list)); } catch {}
+          }).catch(err => {
+            console.error("Error loading bankQuestions for quiz modal:", err);
+          });
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  }, [isCreateQuizModalOpen, isCreating, bankQuestions.length]);
+
+  useEffect(() => {
+    const handleTagsUpdated = (e: any) => {
+      if (e.detail) {
+        setAvailableTags(e.detail);
+      } else {
+        setAvailableTags(getCachedBankTags());
+      }
+    };
+    window.addEventListener('bank_tags_updated', handleTagsUpdated);
+    return () => window.removeEventListener('bank_tags_updated', handleTagsUpdated);
+  }, []);
   
   const [files, setFiles] = useState<{ support: File[] }>({ support: [] });
   const [text, setText] = useState('');
@@ -141,18 +165,24 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
 
   const fetchQuizzes = async () => {
     if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
     try {
-      const userRef = doc(db, 'users', auth.currentUser.uid);
+      const userRef = doc(db, 'users', uid);
       const userDoc = await getDoc(userRef);
       if (userDoc.exists() && userDoc.data().folderColors) {
          setFolderColors(userDoc.data().folderColors);
       }
 
-      const q = query(collection(db, 'quizzes'), where('userId', '==', auth.currentUser.uid));
-      const snapshot = await getDocs(q);
-      const fetchedQuizzes: Quiz[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Quiz));
-      fetchedQuizzes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setQuizzes(fetchedQuizzes);
+      if (memoryCachedQuizzes[uid]) {
+        setQuizzes(memoryCachedQuizzes[uid]);
+      } else {
+        const q = query(collection(db, 'quizzes'), where('userId', '==', uid));
+        const snapshot = await getDocs(q);
+        const fetchedQuizzes: Quiz[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Quiz));
+        fetchedQuizzes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        memoryCachedQuizzes[uid] = fetchedQuizzes;
+        setQuizzes(fetchedQuizzes);
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, 'quizzes/users');
       console.error(err);
@@ -175,6 +205,12 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
   useEffect(() => {
     fetchQuizzes();
   }, []);
+
+  useEffect(() => {
+    if (auth.currentUser && quizzes.length > 0) {
+      memoryCachedQuizzes[auth.currentUser.uid] = quizzes;
+    }
+  }, [quizzes]);
 
   useEffect(() => {
     let interval: any;
@@ -435,7 +471,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
               <input type="file" ref={fileReaderRef} onChange={handleImport} className="hidden" accept=".revisarei,application/json" />
             </button>
             <button 
-              onClick={() => { if (isAdmin) { setIsCreating(true); setTimeout(() => window.scrollBy({ top: 300, behavior: "smooth" }), 100); } else { setIsCreateQuizModalOpen(true); } }}
+              onClick={() => { if (isAdmin) { setIsCreating(true); } else { setIsCreateQuizModalOpen(true); } }}
               className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-700 transition shadow-lg shadow-indigo-100"
             >
               <Plus className="w-5 h-5" /> Novo <span className="hidden sm:inline">caderno</span>
@@ -598,7 +634,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
                   <div key={folder} className={`${colorStr} text-white p-6 rounded-3xl shadow-md cursor-pointer hover:scale-[1.02] hover:shadow-lg transition flex flex-col justify-between min-h-[160px] relative group`} onClick={(e) => {
                     // Prevent default if clicking color picker
                     if ((e.target as HTMLElement).closest('.color-picker')) return;
-                    setSelectedFolder(folder); setTimeout(() => window.scrollBy({ top: 120, behavior: "smooth" }), 100);
+                    setSelectedFolder(folder);
                   }}>
                     <div className="flex justify-between items-start">
                       <Folder className="w-8 h-8 text-white/80" />
@@ -692,8 +728,10 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
                       </span>
                     </div>
 
-                    <h3 className="text-xl font-bold text-slate-900 mb-2 leading-tight flex-1">{q.title || "Caderno sem título"}</h3>
-                    <p className="text-slate-500 font-medium text-sm mb-4">{q.questions.length} questões</p>
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <h3 className="text-xl font-bold text-slate-900 leading-tight">{q.title || "Caderno sem título"}</h3>
+                      <p className="text-slate-500 font-medium text-sm whitespace-nowrap shrink-0 mt-1">{q.questions.length} questões</p>
+                    </div>
                     
                     {/* Knowledge Base Section */}
                     <div className="mb-6 space-y-2">

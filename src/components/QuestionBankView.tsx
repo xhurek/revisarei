@@ -8,16 +8,29 @@ import { Search, Plus, Save, Trash2, X, Edit2, Check, UploadCloud, Eye, Image as
 import { cn } from '../lib/utils';
 import { AdvancedPdfBatchImport } from './AdvancedPdfBatchImport';
 import { fixPdfLigatures, sanitizeQuestionFields, checkQuestionFormatting } from '../lib/textSanitizer';
+import { getCachedBankTags, setCachedBankTags, hasCachedBankTags, BankTagItem, DEFAULT_BANK_TAGS } from '../lib/staticCache';
+
+let memoryCachedQuestions: BankQuestion[] | null = null;
 
 export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
-  const [questions, setQuestions] = useState<BankQuestion[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [questions, setQuestions] = useState<BankQuestion[]>(() => {
+    if (memoryCachedQuestions && memoryCachedQuestions.length > 0) return memoryCachedQuestions;
+    try {
+      const stored = sessionStorage.getItem('cached_questionBank');
+      if (stored) return JSON.parse(stored);
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+  const [loading, setLoading] = useState(!memoryCachedQuestions || memoryCachedQuestions.length === 0);
   const [isAdding, setIsAdding] = useState(false);
   const [isManagingTags, setIsManagingTags] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   
-  // Real-time dynamic tags list
-  const [availableTags, setAvailableTags] = useState<{ id: string, name: string, subtags: string[] }[]>([]);
+  // Real-time dynamic tags list from localStorage
+  const [availableTags, setAvailableTags] = useState<BankTagItem[]>(() => getCachedBankTags());
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
 
   // Search/Filter state
   const [search, setSearch] = useState('');
@@ -127,50 +140,80 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
   const [revealedAnswers, setRevealedAnswers] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    fetchQuestions();
-    
-    // Subscribe to dynamic tags & subtags in real-time
-    const qTags = collection(db, 'bankTags');
-    const unsubTags = onSnapshot(qTags, (snap) => {
-      if (snap.empty) {
-        // Seed default medical areas & specialties if Firestore is brand new
-        const defaults = [
-          { name: 'Clínica Médica', subtags: ['Cardiologia', 'Neurologia', 'Pneumologia', 'Nefrologia', 'Infectologia', 'Endocrinologia', 'Gastroenterologia', 'Hematologia', 'Reumatologia'] },
-          { name: 'Cirurgia Geral', subtags: ['Urologia', 'Traumatologia', 'Cirurgia Vascular', 'Cirurgia Pediátrica', 'Gastrocirurgia', 'Cirurgia Torácica'] },
-          { name: 'Pediatria', subtags: ['Neonatologia', 'Puericultura', 'Infectopediatria', 'Cardiopediatria', 'Pneumopediatria'] },
-          { name: 'Ginecologia', subtags: ['Ginecologia Geral', 'Climatério', 'Mastologia', 'Uroginecologia', 'Planejamento Familiar'] },
-          { name: 'Obstetrícia', subtags: ['Obstetrícia de Alto Risco', 'Pré-natal', 'Parto e Puerpério', 'Medicina Fetal'] },
-          { name: 'Medicina de Família e Comunidade', subtags: ['Atenção Primária', 'Epidemiologia', 'Saúde Coletiva', 'Medicina Preventiva'] },
-          { name: 'Outros', subtags: [] }
-        ];
-        defaults.forEach(async (item) => {
-          try {
-            await addDoc(collection(db, 'bankTags'), item);
-          } catch (e) {
-            handleFirestoreError(e, OperationType.CREATE, 'bankTags');
-          }
-        });
-      } else {
-        const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as { id: string, name: string, subtags: string[] }));
-        setAvailableTags(list);
+    // Check memory cache first
+    if (memoryCachedQuestions && memoryCachedQuestions.length > 0) {
+      setQuestions(memoryCachedQuestions);
+      setLoading(false);
+    } else {
+      // Try to load from sessionStorage
+      try {
+        const stored = sessionStorage.getItem('cached_questionBank');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          memoryCachedQuestions = parsed;
+          setQuestions(parsed);
+          setLoading(false);
+        } else {
+          // If neither, fetch from Firestore
+          fetchQuestions();
+        }
+      } catch {
+        fetchQuestions();
       }
-    }, (err) => {
-      handleFirestoreError(err, OperationType.GET, 'bankTags');
-    });
+    }
+
+    if (!hasCachedBankTags()) {
+      getDocs(collection(db, 'bankTags')).then(snap => {
+        if (!snap.empty) {
+          const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankTagItem));
+          setAvailableTags(list);
+          setCachedBankTags(list);
+        } else {
+          setAvailableTags(DEFAULT_BANK_TAGS);
+          setCachedBankTags(DEFAULT_BANK_TAGS);
+        }
+      }).catch(err => {
+        console.warn("Could not load bankTags from Firestore, using default:", err);
+      });
+    }
+
+    const handleTagsUpdated = (e: any) => {
+      if (e.detail) {
+        setAvailableTags(e.detail);
+      } else {
+        setAvailableTags(getCachedBankTags());
+      }
+    };
+    window.addEventListener('bank_tags_updated', handleTagsUpdated);
 
     return () => {
-      unsubTags();
+      window.removeEventListener('bank_tags_updated', handleTagsUpdated);
     };
   }, []);
 
   const fetchQuestions = async () => {
     try {
-      const q = query(collection(db, 'questionBank'), orderBy('createdAt', 'desc'));
-      const snap = await getDocs(q);
+      const snap = await getDocs(collection(db, 'questionBank'));
       const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankQuestion));
+      list.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      });
+      memoryCachedQuestions = list;
+      try {
+        sessionStorage.setItem('cached_questionBank', JSON.stringify(list));
+      } catch {
+        // ignore
+      }
       setQuestions(list);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.GET, 'questionBank');
+      setLoading(false);
+      setQuotaExceeded(false);
+    } catch (err: any) {
+      console.error("Error refreshing questionBank:", err);
+      if (err?.message?.includes('Quota limit exceeded')) {
+        setQuotaExceeded(true);
+      }
     } finally {
       setLoading(false);
     }
@@ -282,32 +325,30 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
         />
       ) : !isAdding ? (
         <>
-          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+          <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-center justify-between">
             <div>
               <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">EXPLORE E RESPONDA</h2>
-              <div className="flex items-center gap-3 mt-1">
+              <div className="flex flex-wrap items-center gap-3 mt-1">
                 <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4">Banco de Questões</h1>
-                <span className="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black">{questions.length} <span className="hidden sm:inline">Questões</span></span>
+                <span className="bg-slate-200 text-slate-700 px-3 py-1 rounded-full text-xs font-black whitespace-nowrap shrink-0">{questions.length} <span className="hidden sm:inline">Questões</span></span>
               </div>
             </div>
             
-            <div className="flex gap-2 flex-wrap self-end sm:self-auto">
+            <div className="flex flex-col sm:flex-row items-center justify-center sm:justify-end gap-2.5 w-full sm:w-auto">
               <button 
                 onClick={() => setIsCreateQuizModalOpen(true)}
-                className="flex items-center justify-center gap-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-4 py-2.5 rounded-xl font-bold border border-indigo-200 transition shadow-sm"
+                className="w-full sm:w-auto min-w-[70%] sm:min-w-0 flex items-center justify-center gap-2.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-6 py-3 rounded-xl font-bold border border-indigo-200 transition shadow-sm"
               >
-                <BookOpen className="w-5 h-5" />
-                <span className="hidden sm:inline">Criar Caderno</span>
-                <span className="sm:hidden">Caderno</span>
+                <BookOpen className="w-5 h-5 shrink-0" />
+                <span className="text-sm sm:text-base whitespace-nowrap">Novo caderno</span>
               </button>
               {isAdmin && (
                 <button 
                   onClick={() => setIsAdding(true)}
-                  className="flex items-center justify-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition"
+                  className="w-full sm:w-auto min-w-[70%] sm:min-w-0 flex items-center justify-center gap-2 bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition text-sm sm:text-base whitespace-nowrap"
                 >
-                  <Plus className="w-5 h-5" />
-                  <span className="hidden sm:inline">Adicionar Questões</span>
-                  <span className="sm:hidden">Adicionar</span>
+                  <Plus className="w-5 h-5 shrink-0" />
+                  <span>Adicionar Questões</span>
                 </button>
               )}
             </div>
@@ -2028,10 +2069,12 @@ function TagManagerView({
   const handleAddTag = async () => {
     if (!newTagName.trim()) return;
     try {
-      await addDoc(collection(db, 'bankTags'), {
+      const docRef = await addDoc(collection(db, 'bankTags'), {
         name: newTagName.trim(),
         subtags: []
       });
+      const updated = [...availableTags, { id: docRef.id, name: newTagName.trim(), subtags: [] }].sort((a, b) => a.name.localeCompare(b.name));
+      setCachedBankTags(updated);
       setNewTagName('');
     } catch (err: any) {
       handleFirestoreError(err, OperationType.CREATE, 'bankTags');
@@ -2044,6 +2087,8 @@ function TagManagerView({
       await updateDoc(doc(db, 'bankTags', id), {
         name: editingTagName.trim()
       });
+      const updated = availableTags.map(t => t.id === id ? { ...t, name: editingTagName.trim() } : t).sort((a, b) => a.name.localeCompare(b.name));
+      setCachedBankTags(updated);
       setEditingTagId(null);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.UPDATE, `bankTags/${id}`);
@@ -2054,6 +2099,8 @@ function TagManagerView({
     if (confirm(`Tem certeza que deseja excluir a área "${name}"? Isso não apagará as questões do banco, mas removerá a tag de seleção.`)) {
       try {
         await deleteDoc(doc(db, 'bankTags', id));
+        const updated = availableTags.filter(t => t.id !== id);
+        setCachedBankTags(updated);
         if (activeTagForSubtags === id) setActiveTagForSubtags(null);
       } catch (err: any) {
         handleFirestoreError(err, OperationType.DELETE, `bankTags/${id}`);
@@ -2070,9 +2117,12 @@ function TagManagerView({
       return;
     }
     try {
+      const newSubtags = [...tag.subtags, newSubtagName.trim()];
       await updateDoc(doc(db, 'bankTags', tagId), {
-        subtags: [...tag.subtags, newSubtagName.trim()]
+        subtags: newSubtags
       });
+      const updated = availableTags.map(t => t.id === tagId ? { ...t, subtags: newSubtags } : t);
+      setCachedBankTags(updated);
       setNewSubtagName('');
     } catch (err: any) {
       handleFirestoreError(err, OperationType.UPDATE, `bankTags/${tagId}`);
@@ -2083,9 +2133,12 @@ function TagManagerView({
     const tag = availableTags.find(t => t.id === tagId);
     if (!tag) return;
     try {
+      const newSubtags = tag.subtags.filter(s => s !== subtagToDelete);
       await updateDoc(doc(db, 'bankTags', tagId), {
-        subtags: tag.subtags.filter(s => s !== subtagToDelete)
+        subtags: newSubtags
       });
+      const updated = availableTags.map(t => t.id === tagId ? { ...t, subtags: newSubtags } : t);
+      setCachedBankTags(updated);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.UPDATE, `bankTags/${tagId}`);
     }

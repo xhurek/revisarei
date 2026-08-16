@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, query, getDocs, doc, updateDoc, deleteDoc, orderBy, where, addDoc } from 'firebase/firestore';
 import { UserProfile, ErrorReport, TitleDefinition, TitleCriteria } from '../types';
+import { getCachedTitles, setCachedTitles } from '../lib/staticCache';
 import { 
   User, Stethoscope, Users, AlertTriangle, CheckCircle, X, Shield, ShieldCheck, Trash2, Edit3, 
   Tag as TagIcon, Mail, Clock, Plus, Target, Flame, Calendar, Award, 
@@ -121,6 +122,7 @@ export function AdminView() {
       }
 
       setTitles(uniqueTitlesList);
+      setCachedTitles(uniqueTitlesList);
 
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, 'admin/data');
@@ -211,11 +213,15 @@ export function AdminView() {
 
       if (editingTitleId) {
         await updateDoc(doc(db, 'titles', editingTitleId), titleData);
-        setTitles(prev => prev.map(t => t.id === editingTitleId ? { id: editingTitleId, ...titleData } : t).sort((a, b) => a.requirement - b.requirement));
+        const updated = titles.map(t => t.id === editingTitleId ? { id: editingTitleId, ...titleData } : t).sort((a, b) => a.requirement - b.requirement);
+        setTitles(updated);
+        setCachedTitles(updated);
         setEditingTitleId(null);
       } else {
         const docRef = await addDoc(collection(db, 'titles'), titleData);
-        setTitles(prev => [...prev, { id: docRef.id, ...titleData }].sort((a, b) => a.requirement - b.requirement));
+        const updated = [...titles, { id: docRef.id, ...titleData }].sort((a, b) => a.requirement - b.requirement);
+        setTitles(updated);
+        setCachedTitles(updated);
       }
       
       setNewTitleName('');
@@ -291,7 +297,9 @@ export function AdminView() {
     // removed confirm
     try {
       await deleteDoc(doc(db, 'titles', id));
-      setTitles(prev => prev.filter(t => t.id !== id));
+      const updated = titles.filter(t => t.id !== id);
+      setTitles(updated);
+      setCachedTitles(updated);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `titles/${id}`);
     }

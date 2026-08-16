@@ -202,6 +202,8 @@ function FlashcardHtml({ html, isAnswer }: FlashcardHtmlProps) {
 
 
 
+let memoryCachedFlashcards: Record<string, Flashcard[]> = {};
+
 export function FlashcardsRoom() {
   const [allCards, setAllCards] = useState<Flashcard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -256,8 +258,9 @@ export function FlashcardsRoom() {
     fetchCards();
   }, []);
 
-  const fetchCards = async (background = false) => {
+  const fetchCards = async (background = false, forceRefresh = false) => {
     if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
     
     if (!background) {
       setLoading(true);
@@ -268,13 +271,19 @@ export function FlashcardsRoom() {
     }
     
     try {
-      const q = query(
-        collection(db, 'users', auth.currentUser.uid, 'flashcards')
-      );
-      
-      const snapshot = await getDocs(q);
-      const fetchedCards = snapshot.docs.map(d => ({ ...d.data(), id: d.id } as Flashcard));
-      fetchedCards.sort((a, b) => new Date(a.nextReview).getTime() - new Date(b.nextReview).getTime());
+      let fetchedCards: Flashcard[] = [];
+      if (memoryCachedFlashcards[uid] && !forceRefresh) {
+        fetchedCards = memoryCachedFlashcards[uid];
+      } else {
+        const q = query(
+          collection(db, 'users', uid, 'flashcards')
+        );
+        
+        const snapshot = await getDocs(q);
+        fetchedCards = snapshot.docs.map(d => ({ ...d.data(), id: d.id } as Flashcard));
+        fetchedCards.sort((a, b) => new Date(a.nextReview).getTime() - new Date(b.nextReview).getTime());
+        memoryCachedFlashcards[uid] = fetchedCards;
+      }
       
       setAllCards(fetchedCards);
       
@@ -629,7 +638,7 @@ export function FlashcardsRoom() {
       }
 
       setDeckEditModal({ isOpen: false, oldTag: '', newTag: '', subtags: '' });
-      fetchCards(true);
+      fetchCards(true, true);
     } catch (err) {
       console.error(err);
       setModalState({
@@ -681,7 +690,7 @@ export function FlashcardsRoom() {
       });
 
       setCardEditModal({ isOpen: false, card: null, question: '', answer: '', explanation: '', tag: '', subtag: '' });
-      fetchCards(true);
+      fetchCards(true, true);
     } catch (err) {
       console.error(err);
       setModalState({
@@ -1078,7 +1087,7 @@ export function FlashcardsRoom() {
           setEditingFlashcard(null);
         }}
         onCardSaved={() => {
-          fetchCards(true);
+          fetchCards(true, true);
         }}
         existingDecks={existingDecks}
         editingCard={editingFlashcard || undefined}
