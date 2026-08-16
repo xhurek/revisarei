@@ -20,7 +20,7 @@ service cloud.firestore {
     }
 
     function isAuthorized() {
-      return isAdmin() || (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.authorized == true);
+      return isSignedIn();
     }
 
     function isValidId(id) {
@@ -186,7 +186,7 @@ service cloud.firestore {
     }
     // 8. Question Bank
     match /questionBank/{questionId} {
-      allow read: if isAuthorized();
+      allow read: if isSignedIn();
       allow create, update, delete: if isAdmin();
     }
 
