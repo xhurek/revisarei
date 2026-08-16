@@ -51,7 +51,7 @@ service cloud.firestore {
       return data.keys().hasAll(['title', 'questions', 'userId', 'createdAt']) &&
              data.title is string && data.title.size() <= 500 &&
              data.userId == request.auth.uid &&
-             data.questions is list && data.questions.size() <= 300 &&
+             data.questions is list && data.questions.size() <= 2000 &&
              (!data.keys().contains('isPublic') || data.isPublic is bool) &&
              (!data.keys().contains('tag') || data.tag is string && data.tag.size() <= 100) &&
              (!data.keys().contains('mainTag') || data.mainTag is string) &&
@@ -99,8 +99,7 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSignedIn() && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isOwner(userId) && (isAdmin() || incoming().authorized == false);
-      allow update: if (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['folderColors', 'earnedTitles', 'title', 'name'])) || isAdmin();
+      allow create, update: if isOwner(userId) || isAdmin();
       allow delete: if isAdmin();
       
       // Study Notes: User-specific subcollection
@@ -134,10 +133,10 @@ service cloud.firestore {
     match /quizzes/{quizId} {
       allow get: if isAuthorized() && (resource.data.userId == request.auth.uid || resource.data.isPublic == true || isAdmin());
       allow list: if isAuthorized() && (resource.data.userId == request.auth.uid || resource.data.isPublic == true || isAdmin());
-      allow create: if (isAuthorized() && isValidQuiz(incoming())) || isAdmin();
+      allow create: if isAuthorized() && (incoming().userId == request.auth.uid || isAdmin());
       allow delete: if (isAuthorized() && resource.data.userId == request.auth.uid) || isAdmin();
       allow update: if (isAuthorized() && (
-                        (resource.data.userId == request.auth.uid && isValidQuiz(incoming())) ||
+                        resource.data.userId == request.auth.uid ||
                         (resource.data.isPublic == true && incoming().diff(existing()).affectedKeys().hasOnly(['likes']))
                       )) || isAdmin();
     }
