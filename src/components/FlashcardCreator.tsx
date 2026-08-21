@@ -5,11 +5,11 @@ import {
   HelpCircle, Settings, Sliders, Image as ImageIcon, Type, CornerDownLeft, Plus
 } from 'lucide-react';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { collection, addDoc, updateDoc, doc } from 'firebase/firestore';
-import { db, auth, storage, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth, storage } from '../lib/firebase';
 import { Flashcard } from '../types';
 import { AttachedImage, ImageOcclusionEditor } from './ImageOcclusionEditor';
 import { v4 as uuidv4 } from 'uuid';
+import { saveSingleFlashcardToSupabase } from '../lib/supabaseFlashcards';
 
 interface FlashcardCreatorProps {
   editingCard?: Flashcard;
@@ -431,7 +431,9 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks, editingC
 
     setSaveStatus('saving');
     try {
-      await addDoc(collection(db, 'users', auth.currentUser.uid, 'flashcards'), {
+      const newCardId = `fc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const cardData: Flashcard = {
+        id: newCardId,
         question: finalQuestion,
         answer: finalAnswer,
         explanation: explanation.trim(),
@@ -443,7 +445,16 @@ export function FlashcardCreator({ onClose, onCardSaved, existingDecks, editingC
         easeFactor: 2.5,
         userId: auth.currentUser.uid,
         createdAt: new Date().toISOString()
-      });
+      };
+
+      // 1. Save in Supabase
+      try {
+        await saveSingleFlashcardToSupabase(auth.currentUser.uid, cardData);
+      } catch (sErr) {
+        console.warn("Supabase save single flashcard error:", sErr);
+      }
+
+      
 
       setSaveStatus('success');
       triggerNotification(`Card salvo em "${finalDeck}"! Digite o próximo card.`);

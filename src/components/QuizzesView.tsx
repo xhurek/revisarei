@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Quiz } from '../types';
 import { handleFirestoreError, OperationType, auth, db, apiFetch, parseJsonResponse } from '../lib/firebase';
 import { collection, query, where, getDocs, orderBy, addDoc, doc, getDoc, updateDoc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { supabase, toValidUUID } from '../lib/supabase';
+import { updateFolderColorsInSupabase, getUserProfileFromSupabase } from '../lib/supabaseUser';
 import { cn } from '../lib/utils';
 import { CreateQuizModal } from './CreateQuizModal';
 import { AddQuestionsView } from './QuestionBankView';
@@ -78,13 +80,30 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
 
   useEffect(() => {
     if ((isCreateQuizModalOpen || isCreating) && bankQuestions.length <= 40) {
-      getDocs(collection(db, 'questionBank')).then(snap => {
-        const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setBankQuestions(list);
-        try { sessionStorage.setItem('cached_full_questionBank', JSON.stringify(list)); } catch {}
-      }).catch(err => {
-        console.error("Error loading full bankQuestions for quiz modal:", err);
-      });
+      (async () => {
+        try {
+          const { data, error } = await supabase.from('questions').select('*').limit(2000);
+          if (!error && data) {
+            const list = data.map((d: any) => ({
+                 id: d.id,
+                 text: d.text,
+                 category: d.category,
+                 subject: d.subject,
+                 subject_topic: d.subject_topic,
+                 institution: d.institution,
+                 year: d.year,
+                 type: d.type,
+                 options: d.options,
+                 answer: d.answer,
+                 explanation: d.explanation
+            }));
+            setBankQuestions(list);
+            try { sessionStorage.setItem('cached_full_questionBank', JSON.stringify(list)); } catch {}
+          }
+        } catch (err) {
+          console.error("Error loading full bankQuestions for quiz modal:", err);
+        }
+      })();
     }
   }, [isCreateQuizModalOpen, isCreating, bankQuestions.length]);
 
@@ -161,25 +180,46 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
     if (!auth.currentUser) return;
     const uid = auth.currentUser.uid;
     try {
-      const userRef = doc(db, 'users', uid);
-      const userDoc = await getDoc(userRef);
-      if (userDoc.exists() && userDoc.data().folderColors) {
-         setFolderColors(userDoc.data().folderColors);
+      const { data: supaUser } = await supabase.from('users').select('folder_colors').eq('id', uid).single();
+      if (supaUser && supaUser.folder_colors) {
+         setFolderColors(supaUser.folder_colors);
       }
 
       if (memoryCachedQuizzes[uid]) {
         setQuizzes(memoryCachedQuizzes[uid]);
       } else {
-        const q = query(collection(db, 'quizzes'), where('userId', '==', uid));
-        const snapshot = await getDocs(q);
-        const fetchedQuizzes: Quiz[] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Quiz));
-        fetchedQuizzes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        memoryCachedQuizzes[uid] = fetchedQuizzes;
-        setQuizzes(fetchedQuizzes);
+        const { data, error } = await supabase
+          .from('quizzes')
+          .select('*')
+          .eq('user_id', uid)
+          .order('created_at', { ascending: false });
+        if (error) {
+          console.warn("Supabase fetch quizzes error:", error);
+        } else if (data) {
+          const loadedQuizzes = data.map((row: any) => ({
+            id: row.id,
+            userId: row.user_id,
+            title: row.title,
+            description: row.description || '',
+            subject: row.subject || '',
+            tag: row.theme || row.discipline || '',
+            mainTag: row.discipline || row.theme || '',
+            subtags: Array.isArray(row.tags) ? row.tags : [],
+            questions: row.questions || [],
+            isPublic: !!row.is_public,
+            authorName: row.author_name || 'Estudante',
+            authorPhoto: row.author_photo || '',
+            authorTitle: row.author_title || '',
+            progress: row.progress || undefined,
+            knowledgeBase: row.knowledge_base || [],
+            createdAt: row.created_at
+          } as Quiz));
+          memoryCachedQuizzes[uid] = loadedQuizzes;
+          setQuizzes(loadedQuizzes);
+        }
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.GET, 'quizzes/users');
-      console.error(err);
+      console.error("Error in fetchQuizzes", err);
     } finally {
       setLoading(false);
     }
@@ -190,9 +230,9 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
     const newColors = { ...folderColors, [folderName]: color };
     setFolderColors(newColors);
     try {
-      await setDoc(doc(db, 'users', auth.currentUser.uid), { folderColors: newColors }, { merge: true });
+      await updateFolderColorsInSupabase(auth.currentUser.uid, newColors);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${auth.currentUser.uid}`);
+      console.warn("Could not save folder colors to Supabase:", err);
     }
   };
 
@@ -269,7 +309,26 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
         explanationImages: q.explanationImages || []
       }));
 
+      let authorName = auth.currentUser?.displayName || 'Estudante';
+      let authorPhoto = auth.currentUser?.photoURL || '';
+      let authorTitle = 'Estudante';
+      if (auth.currentUser) {
+        try {
+          const uData = await getUserProfileFromSupabase(auth.currentUser.uid);
+          if (uData) {
+            authorName = uData.name || auth.currentUser.displayName || authorName;
+            authorPhoto = uData.photo || auth.currentUser.photoURL || authorPhoto;
+            authorTitle = uData.title || (Array.isArray(uData.earnedTitles) && uData.earnedTitles.length > 0 ? uData.earnedTitles[uData.earnedTitles.length - 1] : authorTitle);
+          }
+        } catch (e) {
+          console.warn("Could not load user title for quiz:", e);
+        }
+      }
+
+      const uniqueId = `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
       const quizData: Quiz = {
+        id: uniqueId,
         title: `Caderno de ${quizMainTag}`,
         questions: mappedQuestions,
         mainTag: quizMainTag.trim(),
@@ -277,20 +336,42 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
         tag: quizMainTag.trim(), // backward compatibility use as folder
         isPublic: isPublic,
         userId: auth.currentUser?.uid || 'anon',
+        authorName,
+        authorPhoto,
+        authorTitle,
         createdAt: new Date().toISOString()
       };
       
+      // 1. Save to Supabase
       try {
-        const docRef = await addDoc(collection(db, 'quizzes'), quizData);
-        const savedQuiz = { ...quizData, id: docRef.id };
-        
-        setTimeout(() => {
-          onQuizGenerated(savedQuiz, true);
-        }, 500);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, 'quizzes');
-        throw err;
+        await supabase.from('quizzes').insert({
+          id: toValidUUID(uniqueId),
+          user_id: quizData.userId,
+          title: quizData.title,
+          discipline: quizData.mainTag,
+          theme: quizData.tag,
+          tags: quizData.subtags,
+          questions: quizData.questions,
+          is_public: quizData.isPublic,
+          author_name: authorName,
+          author_photo: authorPhoto,
+          author_title: authorTitle,
+          created_at: quizData.createdAt
+        });
+      } catch (supaErr) {
+        console.warn("Supabase insert quiz error:", supaErr);
       }
+
+      
+
+      if (auth.currentUser) {
+        delete memoryCachedQuizzes[auth.currentUser.uid];
+      }
+      setQuizzes(prev => [quizData, ...prev]);
+      
+      setTimeout(() => {
+        onQuizGenerated(quizData, true);
+      }, 500);
 
     } catch (err: any) {
       setError(err.message);
@@ -320,9 +401,15 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
       
       if (data.files) {
          const newKB = [...(quiz.knowledgeBase || []), ...data.files];
-         await updateDoc(doc(db, 'quizzes', quiz.id), {
-           knowledgeBase: newKB
-         });
+
+         // Update Supabase
+         try {
+           await supabase.from('quizzes').update({ knowledge_base: newKB }).eq('id', toValidUUID(quiz.id));
+         } catch (supaErr) {
+           console.warn("Supabase update knowledge error:", supaErr);
+         }
+
+         
          
          // Update local state
          setQuizzes(prev => prev.map(q => q.id === quiz.id ? { ...q, knowledgeBase: newKB } : q));
@@ -341,9 +428,13 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
      const newKB = [...quiz.knowledgeBase];
      newKB.splice(fileIndex, 1);
      try {
-       await updateDoc(doc(db, 'quizzes', quiz.id), {
-         knowledgeBase: newKB
-       });
+       try {
+         await supabase.from('quizzes').update({ knowledge_base: newKB }).eq('id', toValidUUID(quiz.id));
+       } catch (supaErr) {
+         console.warn("Supabase remove knowledge error:", supaErr);
+       }
+
+       
        setQuizzes(prev => prev.map(q => q.id === quiz.id ? { ...q, knowledgeBase: newKB } : q));
      } catch(err) {
        console.error("Failed to remove context file", err);
@@ -362,7 +453,18 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
   const handleDeleteQuiz = async () => {
     if (!deletingQuiz || !deletingQuiz.id) return;
     try {
-      await deleteDoc(doc(db, 'quizzes', deletingQuiz.id));
+      // 1. Delete from Supabase
+      try {
+        await supabase.from('quizzes').delete().eq('id', toValidUUID(deletingQuiz.id));
+      } catch (supaErr) {
+        console.warn("Supabase delete quiz error:", supaErr);
+      }
+
+      
+
+      if (auth.currentUser) {
+        delete memoryCachedQuizzes[auth.currentUser.uid];
+      }
       setQuizzes(prev => prev.filter(q => q.id !== deletingQuiz.id));
     } catch (err) {
       console.error("Failed to delete quiz", err);
@@ -374,14 +476,43 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
   const handleEditQuizSave = async () => {
     if (!editingQuiz || !editingQuiz.id) return;
     try {
-      await updateDoc(doc(db, 'quizzes', editingQuiz.id), {
-        title: editTitle,
-        mainTag: editMainTag,
-        subtags: editSubtags,
-        isPublic: editIsPublic,
-        tag: editMainTag // backward compat
-      });
-      setQuizzes(prev => prev.map(q => q.id === editingQuiz.id ? { ...q, title: editTitle, mainTag: editMainTag, subtags: editSubtags, isPublic: editIsPublic, tag: editMainTag } : q));
+      let authorName = editingQuiz.authorName;
+      let authorPhoto = editingQuiz.authorPhoto;
+      let authorTitle = editingQuiz.authorTitle;
+      if (editIsPublic && auth.currentUser) {
+        try {
+          const uData = await getUserProfileFromSupabase(auth.currentUser.uid);
+          if (uData) {
+            authorName = uData.name || auth.currentUser.displayName || authorName || 'Estudante';
+            authorPhoto = uData.photo || auth.currentUser.photoURL || authorPhoto;
+            authorTitle = uData.title || (Array.isArray(uData.earnedTitles) && uData.earnedTitles.length > 0 ? uData.earnedTitles[uData.earnedTitles.length - 1] : authorTitle) || 'Estudante';
+          }
+        } catch (e) {
+          console.warn("Could not fetch user title during quiz edit:", e);
+        }
+      }
+
+      // 1. Update in Supabase
+      try {
+        await supabase.from('quizzes').update({
+          title: editTitle,
+          discipline: editMainTag,
+          theme: editMainTag,
+          tags: editSubtags,
+          is_public: editIsPublic,
+          ...(editIsPublic ? { author_name: authorName, author_photo: authorPhoto, author_title: authorTitle } : {})
+        }).eq('id', toValidUUID(editingQuiz.id));
+      } catch (supaErr) {
+        console.warn("Supabase update quiz error:", supaErr);
+      }
+
+      
+
+      if (auth.currentUser) {
+        delete memoryCachedQuizzes[auth.currentUser.uid];
+      }
+
+      setQuizzes(prev => prev.map(q => q.id === editingQuiz.id ? { ...q, title: editTitle, mainTag: editMainTag, subtags: editSubtags, isPublic: editIsPublic, tag: editMainTag, ...(editIsPublic ? { authorName, authorPhoto, authorTitle } : {}) } : q));
     } catch (err) {
       console.error("Failed to edit quiz", err);
     } finally {
@@ -396,9 +527,23 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
     }
     try {
       const qsToUpdate = quizzes.filter(q => (q.mainTag || q.tag || "Sem assunto") === editingFolder);
-      const updatePromises = qsToUpdate.map(q => updateDoc(doc(db, 'quizzes', q.id!), { mainTag: editFolderName, tag: editFolderName }));
-      await Promise.all(updatePromises);
       
+      // Update in Supabase
+      try {
+        const quizIds = qsToUpdate.map(q => toValidUUID(q.id)).filter(Boolean);
+        if (quizIds.length > 0) {
+          await supabase.from('quizzes').update({ discipline: editFolderName, theme: editFolderName }).in('id', quizIds);
+        }
+      } catch (supaErr) {
+        console.warn("Supabase update folder quizzes error:", supaErr);
+      }
+
+      
+      
+      if (auth.currentUser) {
+        delete memoryCachedQuizzes[auth.currentUser.uid];
+      }
+
       setQuizzes(prev => prev.map(q => (q.mainTag || q.tag || "Sem assunto") === editingFolder ? { ...q, mainTag: editFolderName, tag: editFolderName } : q));
     } catch (err) {
       console.error("Failed to edit folder", err);
@@ -411,12 +556,23 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
     if (!deletingFolder) return;
     try {
       const qsToDelete = quizzes.filter(q => (q.mainTag || q.tag || "Sem assunto") === deletingFolder);
-      const deletePromises = qsToDelete.map(q => {
-        if (q.id) return deleteDoc(doc(db, 'quizzes', q.id));
-        return Promise.resolve();
-      });
-      await Promise.all(deletePromises);
       
+      // Delete in Supabase
+      try {
+        const quizIds = qsToDelete.map(q => toValidUUID(q.id)).filter(Boolean);
+        if (quizIds.length > 0) {
+          await supabase.from('quizzes').delete().in('id', quizIds);
+        }
+      } catch (supaErr) {
+        console.warn("Supabase delete folder quizzes error:", supaErr);
+      }
+
+      
+      
+      if (auth.currentUser) {
+        delete memoryCachedQuizzes[auth.currentUser.uid];
+      }
+
       setQuizzes(prev => prev.filter(q => (q.mainTag || q.tag || "Sem assunto") !== deletingFolder));
     } catch (err) {
       console.error("Failed to delete folder", err);
@@ -436,23 +592,43 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
         const quizData: Quiz = JSON.parse(content);
         if (!quizData.questions || !auth.currentUser) throw new Error("Invalid format");
         
-        // Remove old IDs and reset ownership
-        delete quizData.id;
+        const uniqueId = `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        quizData.id = uniqueId;
         quizData.userId = auth.currentUser.uid;
         quizData.createdAt = new Date().toISOString();
-        
+
+        // 1. Save to Supabase
         try {
-          await addDoc(collection(db, 'quizzes'), quizData);
-          await fetchQuizzes();
-          alert("Importado com sucesso!");
-        } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, 'quizzes');
-          throw err;
+          await supabase.from('quizzes').insert({
+            id: toValidUUID(uniqueId),
+            user_id: quizData.userId,
+            title: quizData.title,
+            discipline: quizData.mainTag || quizData.tag || 'Importados',
+            theme: quizData.tag || quizData.mainTag || 'Importados',
+            tags: Array.isArray(quizData.subtags) ? quizData.subtags : [],
+            questions: quizData.questions,
+            is_public: false,
+            author_name: auth.currentUser.displayName || 'Estudante',
+            author_photo: auth.currentUser.photoURL || '',
+            created_at: quizData.createdAt
+          });
+        } catch (supaErr) {
+          console.warn("Supabase import quiz error:", supaErr);
         }
-      } catch (err) {
-        alert("Arquivo .revisarei inválido");
+
+        
+
+        if (auth.currentUser) {
+          delete memoryCachedQuizzes[auth.currentUser.uid];
+        }
+
+        setQuizzes(prev => [quizData, ...prev]);
+        alert("Caderno importado com sucesso!");
+      } catch (err: any) {
+        alert("Erro ao importar caderno: " + err.message);
+      } finally {
+        if (fileReaderRef.current) fileReaderRef.current.value = '';
       }
-      if (fileReaderRef.current) fileReaderRef.current.value = '';
     };
     reader.readAsText(file);
   };
@@ -585,6 +761,22 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
                      answerImages: q.answerImages || [],
                      explanationImages: q.explanationImages || []
                    }));
+
+                   let authorName = auth.currentUser?.displayName || 'Estudante';
+                   let authorPhoto = auth.currentUser?.photoURL || '';
+                   let authorTitle = 'Estudante';
+                   if (auth.currentUser) {
+                     try {
+                       const uData = await getUserProfileFromSupabase(auth.currentUser.uid);
+                       if (uData) {
+                         authorName = uData.name || auth.currentUser.displayName || authorName;
+                         authorPhoto = uData.photo || auth.currentUser.photoURL || authorPhoto;
+                         authorTitle = uData.title || (Array.isArray(uData.earnedTitles) && uData.earnedTitles.length > 0 ? uData.earnedTitles[uData.earnedTitles.length - 1] : authorTitle);
+                       }
+                     } catch (e) {
+                       console.warn("Could not load user title for quiz:", e);
+                     }
+                   }
                    
                    const quizData: Quiz = {
                      title: `Caderno de ${quizMainTag}`,
@@ -594,11 +786,28 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
                      tag: quizMainTag.trim(),
                      isPublic: isPublic,
                      userId: auth.currentUser?.uid || 'anon',
+                     authorName,
+                     authorPhoto,
+                     authorTitle,
                      createdAt: new Date().toISOString()
                    };
                    
-                   const docRef = await addDoc(collection(db, 'quizzes'), quizData);
-                   const savedQuiz = { ...quizData, id: docRef.id };
+                   const uniqueId = toValidUUID(`quiz_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
+                   await supabase.from('quizzes').insert({
+                     id: uniqueId,
+                     user_id: quizData.userId,
+                     title: quizData.title,
+                     discipline: quizData.mainTag,
+                     theme: quizData.tag,
+                     tags: quizData.subtags,
+                     questions: quizData.questions,
+                     is_public: quizData.isPublic,
+                     author_name: quizData.authorName,
+                     author_photo: quizData.authorPhoto,
+                     author_title: quizData.authorTitle,
+                     created_at: quizData.createdAt
+                   });
+                   const savedQuiz = { ...quizData, id: uniqueId };
                    setTimeout(() => {
                      onQuizGenerated(savedQuiz, true);
                    }, 500);

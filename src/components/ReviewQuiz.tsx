@@ -3,8 +3,8 @@ import { Quiz, Question } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Check, ChevronRight, AlertCircle, BookOpen } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { addDoc, collection, doc, updateDoc } from 'firebase/firestore';
+import { auth } from '../lib/firebase';
+import { supabase, toValidUUID } from '../lib/supabase';
 
 interface ReviewQuizProps {
   quiz: Quiz;
@@ -28,25 +28,42 @@ export function ReviewQuiz({ quiz, onConfirm }: ReviewQuizProps) {
     setSaving(true);
     try {
       if (auth.currentUser) {
-        if (editedQuiz.id) {
-          await updateDoc(doc(db, 'quizzes', editedQuiz.id), {
-            ...editedQuiz,
-            updatedAt: new Date().toISOString()
+        const quizId = editedQuiz.id || `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        const quizToSave = {
+          ...editedQuiz,
+          id: quizId,
+          userId: auth.currentUser.uid,
+          updatedAt: new Date().toISOString()
+        };
+
+        // 1. Save / Update in Supabase
+        try {
+          await supabase.from('quizzes').upsert({
+            id: toValidUUID(quizId),
+            user_id: auth.currentUser.uid,
+            title: quizToSave.title,
+            discipline: quizToSave.mainTag || quizToSave.tag || 'Geral',
+            theme: quizToSave.tag || quizToSave.mainTag || 'Geral',
+            tags: quizToSave.subtags || [],
+            questions: quizToSave.questions,
+            is_public: !!quizToSave.isPublic,
+            author_name: quizToSave.authorName || auth.currentUser.displayName || 'Estudante',
+            author_photo: quizToSave.authorPhoto || auth.currentUser.photoURL || '',
+            author_title: quizToSave.authorTitle || '',
+            created_at: quizToSave.createdAt || new Date().toISOString()
           });
-          onConfirm(editedQuiz);
-        } else {
-          const docRef = await addDoc(collection(db, 'quizzes'), {
-             ...editedQuiz,
-             userId: auth.currentUser.uid,
-             createdAt: new Date().toISOString()
-          });
-          onConfirm({ ...editedQuiz, id: docRef.id });
+        } catch (supaErr) {
+          console.warn("Supabase upsert quiz in ReviewQuiz error:", supaErr);
         }
+
+        
+
+        onConfirm(quizToSave);
      } else {
         onConfirm(editedQuiz);
      }
     } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, 'quizzes');
+      console.error("Error saving quiz:", e);
       onConfirm(editedQuiz);
     } finally {
       setSaving(false);

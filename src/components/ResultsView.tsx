@@ -2,9 +2,10 @@ import { apiFetch, parseJsonResponse } from "../lib/firebase";
 import { useState, useMemo, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Trophy, Brain, RotateCcw, Sparkles, Plus, Check, Clock, AlertCircle, BookOpen } from 'lucide-react';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, addDoc } from 'firebase/firestore';
+import { auth } from '../lib/firebase';
 import { cn } from '../lib/utils';
+import { importFlashcardsBatchToSupabase } from '../lib/supabaseFlashcards';
+import { Flashcard } from '../types';
 
 interface ResultsViewProps {
   results: {
@@ -184,8 +185,14 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
     setSavingCards(true);
 
     try {
-      const promises = results.missed.map(async (m, idx) => {
+      const generatedCards: Flashcard[] = [];
+
+      for (let idx = 0; idx < results.missed.length; idx++) {
+        const m = results.missed[idx];
         const info = aiTopics[idx] || extractTopicAndSubtopic(m);
+        const cardId = `fc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const tag = results.title || info.topic || results.tag || 'Caderno de Erros';
+
         try {
           const response = await apiFetch('/api/generate-flashcard', {
             method: 'POST',
@@ -199,7 +206,8 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
           
           const flashcardData = await parseJsonResponse(response);
           
-          return addDoc(collection(db, 'users', auth.currentUser!.uid, 'flashcards'), {
+          generatedCards.push({
+            id: cardId,
             question: flashcardData.flashcardQuestion || m.question,
             answer: flashcardData.flashcardAnswer || m.answer,
             explanation: flashcardData.explanation || m.explanation || '',
@@ -208,12 +216,14 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
             easeFactor: 2.5,
             userId: auth.currentUser!.uid,
             createdAt: new Date().toISOString(),
-            tag: results.title || info.topic || results.tag || 'Caderno de Erros',
-            subtag: 'Erros'
+            tag: tag,
+            subtag: 'Erros',
+            subtags: ['Erros']
           });
         } catch (e) {
           // Fallback to basic extraction if AI fails
-          return addDoc(collection(db, 'users', auth.currentUser!.uid, 'flashcards'), {
+          generatedCards.push({
+            id: cardId,
             question: m.question,
             answer: m.answer,
             explanation: m.explanation || '',
@@ -222,16 +232,24 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
             easeFactor: 2.5,
             userId: auth.currentUser!.uid,
             createdAt: new Date().toISOString(),
-            tag: results.title || info.topic || results.tag || 'Caderno de Erros',
-            subtag: 'Erros'
+            tag: tag,
+            subtag: 'Erros',
+            subtags: ['Erros']
           });
         }
-      });
+      }
 
-      await Promise.all(promises);
+      // 1. Save in Supabase
+      try {
+        await importFlashcardsBatchToSupabase(auth.currentUser!.uid, generatedCards);
+      } catch (sErr) {
+        console.warn("Supabase batch error in ResultsView:", sErr);
+      }
+
+      
       setSaved(true);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'flashcards');
+      console.error("Error saving flashcards:", error);
     } finally {
       setSavingCards(false);
     }

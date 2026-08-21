@@ -1,18 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ChevronLeft, ChevronRight, Plus, Check, Trash2, X, Calendar as CalendarIcon } from 'lucide-react';
-import { db, auth } from '../lib/firebase';
-import { doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
+import { auth } from '../lib/firebase';
+import { supabase, toValidUUID } from '../lib/supabase';
 import { cn } from '../lib/utils';
 
-interface PlannerTask {
+export interface PlannerTask {
   id: string;
   text: string;
   completed: boolean;
-}
-
-interface PlannerDay {
-  tasks: PlannerTask[];
 }
 
 export function PlannerWidget() {
@@ -30,44 +26,71 @@ export function PlannerWidget() {
     return `${year}-${month}-${day}`;
   };
 
-  // Subscribe to all planner documents to find days with pending tasks
-  useEffect(() => {
+  // Load all days with pending tasks for user
+  const fetchDaysWithPending = async () => {
     if (!auth.currentUser) return;
-    const plannerRef = collection(db, 'users', auth.currentUser.uid, 'planner');
-    const unsubscribe = onSnapshot(plannerRef, (snap) => {
-      const pendingDates = new Set<string>();
-      snap.docs.forEach(doc => {
-        const data = doc.data() as PlannerDay;
-        if (data.tasks && data.tasks.some(t => !t.completed)) {
-          pendingDates.add(doc.id);
-        }
-      });
-      setDaysWithPending(pendingDates);
-    });
-    return () => unsubscribe();
-  }, []);
+    try {
+      const { data, error } = await supabase
+        .from('planner')
+        .select('date_str, tasks')
+        .eq('user_id', auth.currentUser.uid);
 
-  // Load tasks when a date is selected
+      if (!error && data) {
+        const pendingSet = new Set<string>();
+        data.forEach((row: any) => {
+          const rowTasks = Array.isArray(row.tasks) ? row.tasks : [];
+          if (rowTasks.some((t: any) => !t.completed && t.text && t.text.trim() !== '')) {
+            pendingSet.add(row.date_str);
+          }
+        });
+        setDaysWithPending(pendingSet);
+      }
+    } catch (e) {
+      console.warn("Error fetching planner days with pending:", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchDaysWithPending();
+  }, [auth.currentUser]);
+
+  // Load tasks for selected date
   useEffect(() => {
     if (!selectedDate || !auth.currentUser) return;
+    let isMounted = true;
     setLoading(true);
     const dateStr = formatDateString(selectedDate);
-    const dayRef = doc(db, 'users', auth.currentUser.uid, 'planner', dateStr);
     
-    const unsubscribe = onSnapshot(dayRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data() as PlannerDay;
-        setTasks(data.tasks || []);
-      } else {
-        setTasks([]);
-      }
-      setLoading(false);
-    });
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('planner')
+          .select('tasks')
+          .eq('user_id', auth.currentUser!.uid)
+          .eq('date_str', dateStr)
+          .maybeSingle();
 
-    return () => unsubscribe();
+        if (isMounted) {
+          if (!error && data && Array.isArray(data.tasks)) {
+            setTasks(data.tasks);
+          } else {
+            setTasks([]);
+          }
+        }
+      } catch (err) {
+        console.warn("Error loading planner tasks:", err);
+        if (isMounted) setTasks([]);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+    };
   }, [selectedDate]);
 
-  // Handle Ctrl+Q
+  // Handle Ctrl+Q shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key.toLowerCase() === 'q') {
@@ -84,18 +107,32 @@ export function PlannerWidget() {
   const saveTasks = async (newTasks: PlannerTask[]) => {
     if (!selectedDate || !auth.currentUser) return;
     const dateStr = formatDateString(selectedDate);
-    const dayRef = doc(db, 'users', auth.currentUser.uid, 'planner', dateStr);
+    const plannerId = toValidUUID(`${auth.currentUser.uid}_planner_${dateStr}`);
+    
     try {
-      await setDoc(dayRef, { tasks: newTasks });
+      await supabase.from('planner').upsert({
+        id: plannerId,
+        user_id: auth.currentUser.uid,
+        date_str: dateStr,
+        tasks: newTasks,
+        updated_at: new Date().toISOString()
+      });
+
+      const hasUncompleted = newTasks.some(t => !t.completed && t.text.trim() !== '');
+      setDaysWithPending(prev => {
+        const next = new Set(prev);
+        if (hasUncompleted) next.add(dateStr);
+        else next.delete(dateStr);
+        return next;
+      });
     } catch (err) {
-      console.error("Failed to save tasks", err);
+      console.error("Failed to save tasks to Supabase planner:", err);
     }
   };
 
   const addTask = () => {
     const newTasks = [...tasks, { id: Date.now().toString(), text: '', completed: false }];
     setTasks(newTasks);
-    // Don't save immediately on add, wait for user to type? Actually we can save empty.
     saveTasks(newTasks);
   };
 

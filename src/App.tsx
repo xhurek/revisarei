@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { auth, db, signInWithGoogle, testConnection, handleFirestoreError, OperationType } from './lib/firebase';
+import { auth, signInWithGoogle, testConnection } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, updateDoc, setDoc, increment, collection, onSnapshot, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+
 import { View, Quiz, UserProfile, TitleDefinition } from './types';
 import { LoginView } from './components/LoginView';
 import { Dashboard } from './components/Dashboard';
@@ -14,10 +14,13 @@ import { FlashcardsRoom } from './components/FlashcardsRoom';
 import { CommunityView } from './components/CommunityView';
 import { AdminView } from './components/AdminView';
 import { ReportErrorModal } from './components/ReportErrorModal';
+import { InstallAppModal } from './components/InstallAppModal';
 import { AnimatePresence, motion } from 'motion/react';
-import { LogOut, BookOpen, Brain, FileText, LayoutDashboard, Tablet, Globe, Bell, User as UserIcon, Layers, Shield, MessageSquare, AlertCircle, Database, X, CheckCircle2, Trophy, Sparkles, Info } from 'lucide-react';
+import { LogOut, BookOpen, Brain, FileText, LayoutDashboard, Tablet, Globe, Bell, User as UserIcon, Layers, Shield, MessageSquare, AlertCircle, Database, X, CheckCircle2, Trophy, Sparkles, Info, Download } from 'lucide-react';
 import { cn } from './lib/utils';
 import { DEFAULT_TITLES, getCachedTitles, setCachedTitles, hasCachedTitles } from './lib/staticCache';
+import { syncUserProfileToSupabase, updateUserProgressInSupabase, getUserProfileFromSupabase } from './lib/supabaseUser';
+import { supabase } from './lib/supabase';
 
 export { DEFAULT_TITLES };
 
@@ -67,7 +70,28 @@ export default function App() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showReportModal, setShowReportModal] = useState(false);
+  const [showInstallModal, setShowInstallModal] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [menuVisible, setMenuVisible] = useState(true);
+
+  useEffect(() => {
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+  }, []);
+
+  const handleTriggerInstall = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice.outcome === 'accepted') {
+        setDeferredPrompt(null);
+      }
+    }
+  };
   const [toastNotification, setToastNotification] = useState<{
     id: string;
     title: string;
@@ -147,57 +171,47 @@ export default function App() {
 
   const notifRef = useRef<HTMLDivElement>(null);
   
-  // Horizontal drag state for top menu
+  // Horizontal drag state for top menu (desktop mouse drag)
   const menuScrollRef = useRef<HTMLDivElement>(null);
-  const [isDraggingMenu, setIsDraggingMenu] = useState(false);
-  const [startX, setStartX] = useState(0);
-  const [scrollLeft, setScrollLeft] = useState(0);
-  const dragDistanceRef = useRef(0);
+  const isDraggingMenuRef = useRef(false);
+  const startXRef = useRef(0);
+  const scrollLeftRef = useRef(0);
+  const hasDraggedRef = useRef(false);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!menuScrollRef.current) return;
-    setIsDraggingMenu(true);
-    dragDistanceRef.current = 0;
-    setStartX(e.pageX - menuScrollRef.current.offsetLeft);
-    setScrollLeft(menuScrollRef.current.scrollLeft);
+    isDraggingMenuRef.current = true;
+    hasDraggedRef.current = false;
+    startXRef.current = e.pageX - menuScrollRef.current.offsetLeft;
+    scrollLeftRef.current = menuScrollRef.current.scrollLeft;
   };
 
   const handleMouseLeave = () => {
-    setIsDraggingMenu(false);
+    isDraggingMenuRef.current = false;
+    setTimeout(() => { hasDraggedRef.current = false; }, 50);
   };
 
   const handleMouseUp = () => {
-    setIsDraggingMenu(false);
+    isDraggingMenuRef.current = false;
+    setTimeout(() => { hasDraggedRef.current = false; }, 50);
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDraggingMenu || !menuScrollRef.current) return;
-    e.preventDefault();
+    if (!isDraggingMenuRef.current || !menuScrollRef.current) return;
     const x = e.pageX - menuScrollRef.current.offsetLeft;
-    const walk = (x - startX) * 1.5;
-    dragDistanceRef.current += Math.abs(walk);
-    menuScrollRef.current.scrollLeft = scrollLeft - walk;
+    const walk = (x - startXRef.current) * 1.5;
+    if (Math.abs(x - startXRef.current) > 6) {
+      hasDraggedRef.current = true;
+    }
+    menuScrollRef.current.scrollLeft = scrollLeftRef.current - walk;
   };
 
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (!menuScrollRef.current) return;
-    setIsDraggingMenu(true);
-    dragDistanceRef.current = 0;
-    setStartX(e.touches[0].pageX - menuScrollRef.current.offsetLeft);
-    setScrollLeft(menuScrollRef.current.scrollLeft);
+  const handleNavClick = (view: View) => {
+    if (hasDraggedRef.current) return;
+    setCurrentView(view);
   };
 
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!isDraggingMenu || !menuScrollRef.current) return;
-    const x = e.touches[0].pageX - menuScrollRef.current.offsetLeft;
-    const walk = (x - startX) * 1.2;
-    dragDistanceRef.current += Math.abs(walk);
-    menuScrollRef.current.scrollLeft = scrollLeft - walk;
-  };
-
-  const handleTouchEnd = () => {
-    setIsDraggingMenu(false);
-  };
+  
 
   const isAdmin = user?.email === 'rmourari@ufpi.edu.br';
 
@@ -216,31 +230,33 @@ export default function App() {
   }, [showNotifications]);
 
   useEffect(() => {
-    let unsubscribeNotifs: (() => void) | undefined;
+    let userChannel: any;
+    let notifChannel: any;
 
     const unsubscribeAuth = onAuthStateChanged(auth, async (u) => {
       setUser(u);
       
-      // Cleanup previous notifications subscription if user changed
-      if (unsubscribeNotifs) {
-        unsubscribeNotifs();
-        unsubscribeNotifs = undefined;
+      if (userChannel) {
+        supabase.removeChannel(userChannel);
+        userChannel = null;
+      }
+      if (notifChannel) {
+        supabase.removeChannel(notifChannel);
+        notifChannel = null;
       }
 
       if (u) {
-        // Cache-first: only query Firestore if not cached in localStorage
         if (hasCachedTitles()) {
           setTitlesList(getCachedTitles());
         } else {
           try {
-            const titlesSnap = await getDocs(query(collection(db, 'titles'), orderBy('requirement', 'asc')));
-            if (titlesSnap.empty) {
+            const { data, error } = await supabase.from('titles').select('*').order('requirement', { ascending: true });
+            if (error || !data || data.length === 0) {
               setCachedTitles(DEFAULT_TITLES);
               setTitlesList(DEFAULT_TITLES);
             } else {
-              const loaded = titlesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TitleDefinition));
-              setCachedTitles(loaded);
-              setTitlesList(loaded);
+              setCachedTitles(data);
+              setTitlesList(data);
             }
           } catch (err) {
             console.error("Error fetching titles definitions:", err);
@@ -248,47 +264,67 @@ export default function App() {
           }
         }
 
-        // Subscribe to user profile in real-time
-        const userRef = doc(db, 'users', u.uid);
-        const unsubscribeUser = onSnapshot(userRef, (snap) => {
-          if (snap.exists()) {
-            const data = snap.data();
-            setUserData({ uid: snap.id, ...data, earnedTitles: data.earnedTitles || [] } as UserProfile);
-          } else {
-            // First time login logic moved outside onSnapshot to avoid loops
-            initializeUser(u);
+        const fetchAndSetUser = async () => {
+          let prof = await getUserProfileFromSupabase(u.uid);
+          if (!prof) {
+            await initializeUser(u);
+            prof = await getUserProfileFromSupabase(u.uid);
           }
-        }, (err: any) => {
-          if (err.code === 'permission-denied') {
-            console.warn("User profile subscription closed (permission-denied). This is expected during logout.");
-          } else {
-            console.error("User profile subscription error:", err);
+          if (prof) {
+            const isAdm = u.email === 'rmourari@ufpi.edu.br';
+            setUserData({ 
+              ...prof, 
+              uid: u.uid,
+              authorized: prof.authorized === true || isAdm
+            } as UserProfile);
           }
-        });
-
-        // Add to cleanups
-        const originalCleanup = unsubscribeNotifs;
-        unsubscribeNotifs = () => {
-          if (originalCleanup) originalCleanup();
-          unsubscribeUser();
         };
+        
+        await fetchAndSetUser();
 
-        // Subscribe to notifications for THIS user
-        const q = query(
-          collection(db, 'notifications'),
-          where('userId', '==', u.uid),
-          orderBy('createdAt', 'desc'),
-          limit(50)
-        );
-        unsubscribeNotifs = onSnapshot(q, (snapshot) => {
-          setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-        }, (err: any) => {
-          if (err.code === 'permission-denied') {
-            console.warn("Notifications subscription closed (permission-denied). Expected during logout.");
-          } else {
-            handleFirestoreError(err, OperationType.GET, 'notifications');
+        userChannel = supabase.channel(`public:users:id=eq.${u.uid}`)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'users', filter: `id=eq.${u.uid}` }, (payload) => {
+            const data = payload.new as any;
+            if (data) {
+              const isAdm = data.email === 'rmourari@ufpi.edu.br';
+              const prof = { 
+                uid: data.id, 
+                name: data.name, 
+                email: data.email, 
+                photo: data.photo_url, 
+                title: data.title || 'Calouro',
+                earnedTitles: data.earned_titles || [],
+                xp: data.xp || 0,
+                streak: data.streak_days || 0,
+                folderColors: data.folder_colors || {},
+                authorized: data.authorized === true || isAdm
+              } as UserProfile;
+              setUserData(prof);
+            }
+          }).subscribe();
+
+        const fetchNotifs = async () => {
+          const { data } = await supabase.from('notifications').select('*').eq('user_id', u.uid).order('created_at', { ascending: false }).limit(50);
+          if (data) {
+            setNotifications(data.map((n: any) => ({
+              id: n.id,
+              userId: n.user_id,
+              title: n.title,
+              message: n.message,
+              type: n.type,
+              read: n.is_read,
+              createdAt: n.created_at,
+              metadata: n.metadata
+            })));
           }
-        });
+        };
+        
+        await fetchNotifs();
+
+        notifChannel = supabase.channel(`public:notifications:user_id=eq.${u.uid}`)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications', filter: `user_id=eq.${u.uid}` }, () => {
+             fetchNotifs();
+          }).subscribe();
 
       } else {
         setUserData(null);
@@ -309,13 +345,13 @@ export default function App() {
 
     return () => {
       unsubscribeAuth();
-      if (unsubscribeNotifs) unsubscribeNotifs();
+      if (userChannel) supabase.removeChannel(userChannel);
+      if (notifChannel) supabase.removeChannel(notifChannel);
       window.removeEventListener('titles_updated', handleTitlesUpdated);
     };
   }, []); // Run only once on mount
 
   const initializeUser = async (u: User) => {
-    const userRef = doc(db, 'users', u.uid);
     const isAdm = u.email === 'rmourari@ufpi.edu.br';
     const newUser: UserProfile = {
       uid: u.uid,
@@ -325,7 +361,24 @@ export default function App() {
       earnedTitles: [],
       folderColors: {}
     };
-    await setDoc(userRef, newUser);
+    
+    // 1. Supabase User Sync
+    try {
+      await syncUserProfileToSupabase({
+        uid: u.uid,
+        name: newUser.name,
+        email: newUser.email,
+        photo: u.photoURL || undefined,
+        title: 'Calouro',
+        earnedTitles: [],
+        streak: 0,
+        xp: 0,
+        folderColors: {},
+        authorized: isAdm
+      });
+    } catch (sErr) {
+      console.warn("Supabase initialize user error:", sErr);
+    }
   };
 
   const handleQuizGenerated = (quiz: Quiz, skipReview: boolean) => {
@@ -352,179 +405,24 @@ export default function App() {
     setCurrentView(View.RESULTS);
 
     if (auth.currentUser && userData) {
-      const statsRef = doc(db, 'users', auth.currentUser.uid, 'stats', 'main');
-      const userRef = doc(db, 'users', auth.currentUser.uid);
-      
       try {
-        const docSnap = await getDoc(statsRef);
-        let updatedStats: any = {};
-        let today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayStr = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().split('T')[0];
-
-        const currentMonday = new Date(today);
-        const day = currentMonday.getDay();
-        const diffToMonday = currentMonday.getDate() - day + (day === 0 ? -6 : 1);
-        currentMonday.setDate(diffToMonday);
-        const currentWeekStr = new Date(currentMonday.getTime() - currentMonday.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+        const xpGained = (score * 10) + ((total - score) * 3);
+        const earned = userData.earnedTitles || [];
+        const currentTitle = earned[earned.length - 1] || userData.title || 'Estudante de Medicina';
         
-        if (docSnap.exists()) {
-          const s = docSnap.data();
-          const lastDate = s.lastActivityDate || '';
-          
-          let dailyCount = lastDate === todayStr ? (s.dailyQuestionCount || 0) : 0;
-          let weeklyCount = 0;
-          if (s.currentWeek === currentWeekStr) {
-            weeklyCount = s.weeklyQuestionCount || 0;
-          } else if (lastDate && lastDate >= currentWeekStr) {
-            weeklyCount = s.weeklyQuestionCount || 0;
-          }
-          
-          let lastActivity = new Date(0);
-          if (lastDate) {
-            const [y, m, d] = lastDate.split('-');
-            lastActivity = new Date(Number(y), Number(m) - 1, Number(d), 0, 0, 0, 0);
-          }
-          
-          const diffTime = today.getTime() - lastActivity.getTime();
-          const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-          
-          const allowedToday = Math.max(0, 50 - dailyCount);
-          const progressionToApply = Math.min(total, allowedToday);
-          
-          let streak = s.streak || 0;
-          if (lastDate !== todayStr) {
-            if (diffDays === 1) streak += 1;
-            else if (diffDays > 1) streak = 1;
-          }
-
-          const newDailyCount = dailyCount + total;
-          const newWeeklyCount = weeklyCount + total;
-          
-          let dailyGoalsMet = s.dailyGoalsMet || 0;
-          if (dailyCount < 50 && newDailyCount >= 50) dailyGoalsMet += 1;
-          
-          let weeklyGoalsMet = s.weeklyGoalsMet || 0;
-          if (weeklyCount < 300 && newWeeklyCount >= 300) weeklyGoalsMet += 1;
-
-          let responsesTotal = s.responses_total || 0;
-          responsesTotal += 1;
-
-          let existingCategoryStats = s.categoryStats || {};
-          if (categoryStats) {
-            Object.keys(categoryStats).forEach(cat => {
-              if (!existingCategoryStats[cat]) {
-                existingCategoryStats[cat] = { correct: 0, total: 0 };
-              }
-              existingCategoryStats[cat].correct += categoryStats[cat].correct;
-              existingCategoryStats[cat].total += categoryStats[cat].total;
-            });
-          }
-
-          updatedStats = {
-            questionsAnswered: increment(total),
-            progressionQuestions: increment(progressionToApply),
-            questionsCorrect: increment(score),
-            dailyQuestionCount: newDailyCount,
-            weeklyQuestionCount: newWeeklyCount,
-            lastActivityDate: todayStr,
-            currentWeek: currentWeekStr,
-            streak,
-            dailyGoalsMet,
-            weeklyGoalsMet,
-            responses_total: responsesTotal,
-            categoryStats: existingCategoryStats
-          };
-          
-          await updateDoc(statsRef, updatedStats);
-          
-          // Use localized latest values for check
-          const latestStats = {
-             ...s,
-             ...updatedStats,
-             questionsAnswered: (s.questionsAnswered || 0) + total,
-             progressionQuestions: (s.progressionQuestions || 0) + progressionToApply,
-             questionsCorrect: (s.questionsCorrect || 0) + score
-          };
-
-          const earned = userData.earnedTitles || [];
-          let newlyEarned = false;
-          const activeList = titlesList.length > 0 ? titlesList : DEFAULT_TITLES;
-          
-          activeList.forEach(t => {
-            let val = 0;
-            switch(t.criteria) {
-              case 'total_questions': val = latestStats.questionsAnswered; break;
-              case 'daily_questions': val = latestStats.dailyQuestionCount; break;
-              case 'weekly_questions': val = latestStats.weeklyQuestionCount; break;
-              case 'streak_days': val = latestStats.streak; break;
-              case 'daily_goals_met': val = latestStats.dailyGoalsMet; break;
-              case 'weekly_goals_met': val = latestStats.weeklyGoalsMet; break;
-              case 'flashcards_reviewed': val = latestStats.flashcardsReviewed || 0; break;
-              case 'responses_total': val = latestStats.responses_total || 0; break;
-              case 'saves_total': val = latestStats.saves_total || 0; break;
-            }
-
-            if (val >= t.requirement && !earned.includes(t.name)) {
-              earned.push(t.name);
-              newlyEarned = true;
-            }
-          });
-          
-          if (newlyEarned || (!userData.title && earned.length > 0)) {
-            const currentTitle = earned[earned.length - 1] || 'Estudante de Medicina';
-            await updateDoc(userRef, { earnedTitles: earned, title: currentTitle });
-            setUserData({ ...userData, earnedTitles: earned, title: currentTitle });
-          }
-
-      } else {
-          // New stats
-          const statsData = {
+        await updateUserProgressInSupabase(auth.currentUser.uid, {
+          xpIncrement: xpGained,
+          streak: (userData.streak || 0) + 1,
+          lastStudyDate: new Date().toISOString(),
+          title: currentTitle,
+          earnedTitles: earned,
+          rawStats: {
             questionsAnswered: total,
-            progressionQuestions: Math.min(total, 50),
             questionsCorrect: score,
-            flashcardsReviewed: 0,
-            dailyQuestionCount: total,
-            weeklyQuestionCount: total,
-            lastActivityDate: todayStr,
-            currentWeek: currentWeekStr,
-            streak: 1,
-            dailyGoalsMet: total >= 50 ? 1 : 0,
-            weeklyGoalsMet: total >= 300 ? 1 : 0,
-            responses_total: 1,
-            saves_total: 0,
             categoryStats: categoryStats || {}
-          };
-          await setDoc(statsRef, statsData);
-
-          const earned = userData.earnedTitles || [];
-          let newlyEarned = false;
-          
-          titlesList.forEach(t => {
-            let val = 0;
-            switch(t.criteria) {
-              case 'total_questions': val = statsData.questionsAnswered; break;
-              case 'daily_questions': val = statsData.dailyQuestionCount; break;
-              case 'weekly_questions': val = statsData.weeklyQuestionCount; break;
-              case 'streak_days': val = statsData.streak; break;
-              case 'daily_goals_met': val = statsData.dailyGoalsMet; break;
-              case 'weekly_goals_met': val = statsData.weeklyGoalsMet; break;
-              case 'responses_total': val = statsData.responses_total; break;
-              case 'saves_total': val = statsData.saves_total; break;
-            }
-            if (val >= t.requirement && !earned.includes(t.name)) {
-              earned.push(t.name);
-              newlyEarned = true;
-            }
-          });
-
-          if (newlyEarned) {
-            await updateDoc(userRef, { earnedTitles: earned });
-            setUserData({ ...userData, earnedTitles: earned });
           }
-        }
+        });
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, 'stats');
         console.error("Error updating stats", err);
       }
     }
@@ -580,67 +478,49 @@ export default function App() {
             onMouseLeave={handleMouseLeave}
             onMouseUp={handleMouseUp}
             onMouseMove={handleMouseMove}
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
+            
+            
+            
             className="flex items-center overflow-x-auto justify-start sm:justify-center gap-2 lg:gap-8 py-3 px-4 w-full touch-pan-x select-none cursor-grab active:cursor-grabbing [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] overscroll-x-contain"
             style={{ WebkitOverflowScrolling: 'touch' }}
           >
-            <div className="w-4 lg:w-6 shrink-0" aria-hidden="true" />
+            <div className="w-2 sm:w-4 shrink-0" aria-hidden="true" />
             <NavButton
               active={currentView === View.DASHBOARD}
-              onClick={() => {
-                if (dragDistanceRef.current > 10) return;
-                setCurrentView(View.DASHBOARD);
-              }}
-              icon={<Brain className="w-5 h-5" />}
+              onClick={() => handleNavClick(View.DASHBOARD)}
+              icon={<Brain className="w-5 h-5 shrink-0" />}
               label="Avaliação Geral"
             />
             <NavButton
               active={currentView === View.BANK}
-              onClick={() => {
-                if (dragDistanceRef.current > 10) return;
-                setCurrentView(View.BANK);
-              }}
-              icon={<Database className="w-5 h-5" />}
+              onClick={() => handleNavClick(View.BANK)}
+              icon={<Database className="w-5 h-5 shrink-0" />}
               label="Banco de Questões"
             />
             <NavButton
               active={currentView === View.LANDING}
-              onClick={() => {
-                if (dragDistanceRef.current > 10) return;
-                setCurrentView(View.LANDING);
-              }}
-              icon={<FileText className="w-5 h-5" />}
+              onClick={() => handleNavClick(View.LANDING)}
+              icon={<FileText className="w-5 h-5 shrink-0" />}
               label="Cadernos"
             />
             <NavButton
               active={currentView === View.FLASHCARDS}
-              onClick={() => {
-                if (dragDistanceRef.current > 10) return;
-                setCurrentView(View.FLASHCARDS);
-              }}
-              icon={<Layers className="w-5 h-5" />}
+              onClick={() => handleNavClick(View.FLASHCARDS)}
+              icon={<Layers className="w-5 h-5 shrink-0" />}
               label="Flashcards"
             />
             <NavButton
               active={currentView === View.COMMUNITY}
-              onClick={() => {
-                if (dragDistanceRef.current > 10) return;
-                setCurrentView(View.COMMUNITY);
-              }}
-              icon={<Globe className="w-5 h-5" />}
+              onClick={() => handleNavClick(View.COMMUNITY)}
+              icon={<Globe className="w-5 h-5 shrink-0" />}
               label="Mundo"
             />
             
             {isAdmin && (
               <NavButton
                 active={currentView === View.ADMIN}
-                onClick={() => {
-                  if (dragDistanceRef.current > 10) return;
-                  setCurrentView(View.ADMIN);
-                }}
-                icon={<Shield className="w-5 h-5" />}
+                onClick={() => handleNavClick(View.ADMIN)}
+                icon={<Shield className="w-5 h-5 shrink-0" />}
                 label="Admin"
               />
             )}
@@ -714,6 +594,20 @@ export default function App() {
                 )}
               </AnimatePresence>
             </div>
+
+            <button
+              onClick={() => {
+                if (deferredPrompt) {
+                  handleTriggerInstall();
+                } else {
+                  setShowInstallModal(true);
+                }
+              }}
+              className="p-2 text-slate-400 hover:text-indigo-600 transition-colors relative shrink-0"
+              title="Instalar / Fixar na Área de Trabalho e Barra de Tarefas"
+            >
+              <Download className="w-5 h-5" />
+            </button>
 
             <button
               onClick={() => auth.signOut()}
@@ -825,6 +719,9 @@ export default function App() {
                   setActiveQuiz(q);
                   setCurrentView(View.QUIZ);
                 }}
+                onSelectFlashcardDeck={() => {
+                  setCurrentView(View.FLASHCARDS);
+                }}
               />
             </motion.div>
           )}
@@ -874,6 +771,13 @@ export default function App() {
         currentPage={currentView} 
       />
 
+      <InstallAppModal
+        isOpen={showInstallModal}
+        onClose={() => setShowInstallModal(false)}
+        deferredPrompt={deferredPrompt}
+        onTriggerInstall={handleTriggerInstall}
+      />
+
       {/* Floating Animated Toast Notification */}
       <div className="fixed bottom-6 left-0 right-0 z-[9999] flex justify-center pointer-events-none px-4">
         <AnimatePresence>
@@ -915,15 +819,18 @@ export default function App() {
 function NavButton({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className={cn(
-        "flex items-center gap-2 px-2 sm:px-3 py-2 rounded-lg transition-colors duration-200 shrink-0",
-        active ? "bg-slate-50 text-indigo-600 px-3 sm:px-4" : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"
+        "flex items-center gap-2 px-2 sm:px-3 py-2 rounded-lg transition-colors duration-200 shrink-0 touch-manipulation select-none",
+        active 
+          ? "bg-slate-50 text-indigo-600 px-3 sm:px-4" 
+          : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"
       )}
     >
       {icon}
       {active && (
-        <span className="text-sm font-bold">
+        <span className="text-sm font-bold whitespace-nowrap">
           {label}
         </span>
       )}

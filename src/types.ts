@@ -43,10 +43,15 @@ export interface UserProfile {
   uid?: string;
   name?: string;
   email?: string;
+  photo?: string;
+  photoURL?: string;
   authorized?: boolean;
   role?: string;
   title?: string;
   earnedTitles?: string[];
+  xp?: number;
+  streak?: number;
+  streak_days?: number;
   totalCorrectAnswers?: number;
   quizzesCompleted?: number;
   studyHours?: number;
@@ -92,6 +97,9 @@ export interface Quiz {
   knowledgeBase?: any[];
   questions: Question[];
   progress?: any;
+  authorName?: string;
+  authorPhoto?: string;
+  authorTitle?: string;
   createdAt?: string;
   createdBy?: string;
 }

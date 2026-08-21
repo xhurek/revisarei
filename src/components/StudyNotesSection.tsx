@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, getDocs, addDoc, doc, deleteDoc, updateDoc, onSnapshot, query, orderBy, setDoc, getDoc } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, apiFetch, parseJsonResponse, OperationType } from '../lib/firebase';
+import { auth, apiFetch, parseJsonResponse } from '../lib/firebase';
+import { supabase, toValidUUID } from '../lib/supabase';
+import { updateFolderColorsInSupabase } from '../lib/supabaseUser';
 import { StudyNote } from '../types';
 import { Folder, FileText, Plus, Download, Trash2, Pencil, Palette, X, ArrowLeft, Tag, Globe, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -23,31 +24,54 @@ export function StudyNotesSection() {
 
   const fileReaderRef = useRef<HTMLInputElement>(null);
 
+  const loadNotesFromSupabase = async (uid: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('study_notes')
+        .select('*')
+        .eq('user_id', uid)
+        .order('created_at', { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        const mappedNotes: StudyNote[] = data.map((row: any) => ({
+          id: row.id,
+          userId: row.user_id,
+          createdBy: row.user_id,
+          title: row.title,
+          content: row.content,
+          folder: Array.isArray(row.tags) && row.tags.length > 0 ? row.tags[0] : (row.summary || 'Geral'),
+          isPublic: !!row.is_public,
+          likes: [],
+          authorName: row.author_name || 'Estudante',
+          authorPhoto: row.author_photo || '',
+          authorTitle: row.author_title || '',
+          createdAt: row.created_at
+        }));
+        setNotes(mappedNotes);
+        setLoading(false);
+        return true;
+      }
+    } catch (e) {
+      console.warn("Could not load study notes from Supabase:", e);
+    }
+    return false;
+  };
+
   useEffect(() => {
     if (!auth.currentUser) return;
+    const uid = auth.currentUser.uid;
     
-    // Fetch folder colors
-    getDoc(doc(db, 'users', auth.currentUser.uid)).then(docSnap => {
-      if (docSnap.exists() && docSnap.data().folderColors) {
-        setFolderColors(docSnap.data().folderColors);
+    // Fetch folder colors from Supabase user profile
+    supabase.from('users').select('folder_colors').eq('id', uid).single().then(({ data, error }) => {
+      if (!error && data && data.folder_colors) {
+        setFolderColors(data.folder_colors);
       }
     });
 
-    const q = query(collection(db, `users/${auth.currentUser.uid}/studyNotes`), orderBy('createdAt', 'desc'));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const notesData: StudyNote[] = [];
-      snapshot.forEach((doc) => {
-        notesData.push({ id: doc.id, ...doc.data() } as StudyNote);
-      });
-      setNotes(notesData);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching study notes:", error);
+    // Load from Supabase
+    loadNotesFromSupabase(uid).finally(() => {
       setLoading(false);
     });
-
-    return () => unsubscribe();
   }, []);
 
   const handleSelectFolder = (folder: string) => {
@@ -72,9 +96,9 @@ export function StudyNotesSection() {
     setFolderColors(newColors);
     setActiveColorPicker(null);
     try {
-      await setDoc(doc(db, 'users', auth.currentUser.uid), { folderColors: newColors }, { merge: true });
+      await updateFolderColorsInSupabase(auth.currentUser.uid, newColors);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${auth.currentUser.uid}`);
+      console.warn("Could not save folder color to Supabase:", err);
     }
   };
 
@@ -82,15 +106,24 @@ export function StudyNotesSection() {
     if (!deletingFolder || !auth.currentUser) return;
     try {
       const folderNotes = notes.filter(n => n.folder === deletingFolder);
-      await Promise.all(folderNotes.map(async (n) => {
-        if (n.isPublic) {
-          try { await deleteDoc(doc(db, 'publicStudyNotes', n.id!)); } catch(e){}
+      
+      // Delete in Supabase
+      try {
+        const noteIds = folderNotes.map(n => toValidUUID(n.id)).filter(Boolean);
+        if (noteIds.length > 0) {
+          await supabase.from('study_notes').delete().in('id', noteIds);
         }
-        return deleteDoc(doc(db, `users/${auth.currentUser?.uid}/studyNotes`, n.id!));
-      }));
+      } catch (supaErr) {
+        console.warn("Supabase delete folder notes error:", supaErr);
+      }
+
+      
+
+      setNotes(prev => prev.filter(n => n.folder !== deletingFolder));
       setDeletingFolder(null);
+      if (selectedFolder === deletingFolder) setSelectedFolder(null);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, null);
+      console.error("Error:", err);
     }
   };
 
@@ -98,96 +131,118 @@ export function StudyNotesSection() {
     if (!editingFolder || !editFolderName.trim() || !auth.currentUser) return;
     try {
       const folderNotes = notes.filter(n => n.folder === editingFolder);
-      await Promise.all(folderNotes.map(async (n) => {
-        if (n.isPublic) {
-          try { await updateDoc(doc(db, 'publicStudyNotes', n.id!), { folder: editFolderName }); } catch(e){}
-        }
-        return updateDoc(doc(db, `users/${auth.currentUser?.uid}/studyNotes`, n.id!), { folder: editFolderName });
-      }));
       
+      // Update in Supabase
+      try {
+        const noteIds = folderNotes.map(n => toValidUUID(n.id)).filter(Boolean);
+        if (noteIds.length > 0) {
+          await supabase.from('study_notes').update({ tags: [editFolderName] }).in('id', noteIds);
+        }
+      } catch (supaErr) {
+        console.warn("Supabase rename folder notes error:", supaErr);
+      }
+
+      
+      
+      setNotes(prev => prev.map(n => n.folder === editingFolder ? { ...n, folder: editFolderName } : n));
+      if (selectedFolder === editingFolder) setSelectedFolder(editFolderName);
+
       if (folderColors[editingFolder]) {
         const newColors = { ...folderColors };
         newColors[editFolderName] = newColors[editingFolder];
         delete newColors[editingFolder];
         setFolderColors(newColors);
-        await setDoc(doc(db, 'users', auth.currentUser.uid), { folderColors: newColors }, { merge: true });
+        await supabase.from('users').update({ folder_colors: newColors }).eq('id', auth.currentUser.uid);
       }
       setEditingFolder(null);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, null);
+      console.error("Error:", err);
     }
   };
 
   const handleCreateNote = async () => {
-    if (!newNoteTitle.trim() || !newNoteFolder.trim()) {
+    if (!newNoteTitle.trim() || !newNoteFolder.trim() || !auth.currentUser) {
       alert("Preencha título e pasta");
       return;
     }
     
     try {
+      const noteId = `note_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       const newNote = {
         title: newNoteTitle,
         folder: newNoteFolder,
         content: `<h1>${newNoteTitle}</h1><p>Comece a escrever aqui...</p>`,
         createdAt: new Date().toISOString(),
-        createdBy: auth.currentUser?.uid || '',
+        createdBy: auth.currentUser.uid,
         isPublic: false
       };
+
+      // 1. Save to Supabase
+      try {
+        await supabase.from('study_notes').insert({
+          id: toValidUUID(noteId),
+          user_id: auth.currentUser.uid,
+          title: newNote.title,
+          content: newNote.content,
+          tags: [newNote.folder],
+          is_public: false,
+          author_name: auth.currentUser.displayName || 'Estudante',
+          author_photo: auth.currentUser.photoURL || '',
+          created_at: newNote.createdAt
+        });
+      } catch (supaErr) {
+        console.warn("Supabase insert note error:", supaErr);
+      }
       
-      const docRef = await addDoc(collection(db, `users/${auth.currentUser?.uid}/studyNotes`), newNote);
-      setEditingNote({ id: docRef.id, ...newNote });
+      
+
+      const createdNoteObj = { id: noteId, ...newNote };
+      setNotes(prev => [createdNoteObj, ...prev]);
+      setEditingNote(createdNoteObj);
       setIsCreating(false);
       setNewNoteTitle('');
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.CREATE, null);
+      console.error("Error:", err);
     }
   };
 
   const handleSaveNote = async (updatedNote: StudyNote) => {
     if (!updatedNote.id || !auth.currentUser) return;
     try {
-      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-      const userData = userDoc.exists() ? userDoc.data() : {};
+      const { data: supaUserData } = await supabase.from('users').select('*').eq('id', auth.currentUser.uid).single();
+      const userData = supaUserData || {};
       const authorName = auth.currentUser.displayName || userData.name || 'Estudante';
       const authorPhoto = auth.currentUser.photoURL || '';
-      const authorTitle = userData.title || 'Estudante';
+      const authorTitle = userData.title || (Array.isArray(userData.earnedTitles) && userData.earnedTitles.length > 0 ? userData.earnedTitles[userData.earnedTitles.length - 1] : undefined) || 'Estudante de Medicina';
 
-      await updateDoc(doc(db, `users/${auth.currentUser.uid}/studyNotes`, updatedNote.id), {
-        title: updatedNote.title,
-        content: updatedNote.content,
-        isPublic: !!updatedNote.isPublic,
-        authorName,
-        authorPhoto,
-        authorTitle
-      });
-
-      if (updatedNote.isPublic) {
-        await setDoc(doc(db, 'publicStudyNotes', updatedNote.id), {
+      // 1. Update in Supabase
+      try {
+        await supabase.from('study_notes').upsert({
+          id: toValidUUID(updatedNote.id),
+          user_id: auth.currentUser.uid,
           title: updatedNote.title,
           content: updatedNote.content,
-          folder: updatedNote.folder || 'Geral',
-          userId: auth.currentUser.uid,
-          authorName,
-          authorPhoto,
-          authorTitle,
-          isPublic: true,
-          likes: updatedNote.likes || [],
-          createdAt: updatedNote.createdAt || new Date().toISOString(),
-          originalNoteId: updatedNote.id
-        }, { merge: true });
-      } else {
-        try {
-          await deleteDoc(doc(db, 'publicStudyNotes', updatedNote.id));
-        } catch (e) {}
+          tags: updatedNote.folder ? [updatedNote.folder] : ['Geral'],
+          is_public: !!updatedNote.isPublic,
+          author_name: authorName,
+          author_photo: authorPhoto,
+          author_title: authorTitle,
+          created_at: updatedNote.createdAt || new Date().toISOString()
+        });
+      } catch (supaErr) {
+        console.warn("Supabase update note error:", supaErr);
       }
 
-      // Update local state of editingNote if currently open
+      
+
+      // Update local state of editingNote & list
+      setNotes(prev => prev.map(n => n.id === updatedNote.id ? { ...n, ...updatedNote, authorName, authorPhoto, authorTitle } : n));
       if (editingNote && editingNote.id === updatedNote.id) {
         setEditingNote({ ...updatedNote, isPublic: !!updatedNote.isPublic, authorName, authorPhoto, authorTitle });
       }
       
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, null);
+      console.error("Error:", error);
     }
   };
 
@@ -196,12 +251,19 @@ export function StudyNotesSection() {
     if (!note.id || !auth.currentUser) return;
     if (!confirm('Excluir este caderno de estudo?')) return;
     try {
-      if (note.isPublic) {
-        try { await deleteDoc(doc(db, 'publicStudyNotes', note.id)); } catch(e){}
+      // 1. Delete from Supabase
+      try {
+        await supabase.from('study_notes').delete().eq('id', toValidUUID(note.id));
+      } catch (supaErr) {
+        console.warn("Supabase delete note error:", supaErr);
       }
-      await deleteDoc(doc(db, `users/${auth.currentUser?.uid}/studyNotes`, note.id));
+
+      
+
+      setNotes(prev => prev.filter(n => n.id !== note.id));
+      if (editingNote?.id === note.id) setEditingNote(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, null);
+      console.error("Error:", error);
     }
   };
 
@@ -232,6 +294,7 @@ export function StudyNotesSection() {
       }
 
       const newFolder = prompt("Nome da pasta para este caderno:") || "Importados";
+      const noteId = `note_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
       const newNote = {
         title: file.name.replace(/\.[^/.]+$/, ""),
@@ -241,8 +304,28 @@ export function StudyNotesSection() {
         createdBy: auth.currentUser?.uid || ''
       };
       
-      const docRef = await addDoc(collection(db, `users/${auth.currentUser.uid}/studyNotes`), newNote);
-      setEditingNote({ id: docRef.id, ...newNote });
+      // Save to Supabase
+      try {
+        await supabase.from('study_notes').insert({
+          id: toValidUUID(noteId),
+          user_id: auth.currentUser.uid,
+          title: newNote.title,
+          content: newNote.content,
+          tags: [newNote.folder],
+          is_public: false,
+          author_name: auth.currentUser.displayName || 'Estudante',
+          author_photo: auth.currentUser.photoURL || '',
+          created_at: newNote.createdAt
+        });
+      } catch (supaErr) {
+        console.warn("Supabase import note error:", supaErr);
+      }
+
+      
+
+      const createdNoteObj = { id: noteId, ...newNote };
+      setNotes(prev => [createdNoteObj, ...prev]);
+      setEditingNote(createdNoteObj);
       
     } catch (err: any) {
       alert("Erro ao importar: " + err.message);

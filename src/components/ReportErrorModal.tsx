@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, addDoc } from 'firebase/firestore';
+import { auth } from '../lib/firebase';
+import { supabase, generateUUID, toValidUUID } from '../lib/supabase';
 import { X, Send, AlertCircle, MessageSquare } from 'lucide-react';
 
 interface ReportErrorModalProps {
@@ -21,15 +21,23 @@ export function ReportErrorModal({ isOpen, onClose, currentPage }: ReportErrorMo
 
     setLoading(true);
     try {
-      await addDoc(collection(db, 'error_reports'), {
-        userId: auth.currentUser.uid,
-        userName: auth.currentUser.displayName || 'Usuário',
-        userEmail: auth.currentUser.email || '',
-        message: message.trim(),
-        page: currentPage,
-        createdAt: new Date().toISOString(),
-        status: 'pending'
-      });
+      const reportId = generateUUID();
+      // 1. Supabase
+      try {
+        await supabase.from('reports').insert({
+          id: reportId,
+          item_id: toValidUUID(currentPage || 'general'),
+          item_type: 'error_report',
+          reporter_id: auth.currentUser.uid,
+          reason: `Erro relatado na página: ${currentPage}`,
+          details: message.trim(),
+          status: 'pending'
+        });
+      } catch (supaErr) {
+        console.warn("Supabase report error:", supaErr);
+      }
+
+
       setSuccess(true);
       setTimeout(() => {
         onClose();
@@ -37,7 +45,7 @@ export function ReportErrorModal({ isOpen, onClose, currentPage }: ReportErrorMo
         setMessage('');
       }, 2000);
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'error_reports');
+      console.error(err);
       alert('Erro ao enviar relatório. Tente novamente.');
     } finally {
       setLoading(false);

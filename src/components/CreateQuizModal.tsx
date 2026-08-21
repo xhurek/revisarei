@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Folder, Palette, FolderPlus, Loader2, Filter, X, Check } from 'lucide-react';
-import { collection, addDoc, doc, getDoc, updateDoc, setDoc, getDocs } from 'firebase/firestore';
+import { supabase, toValidUUID } from '../lib/supabase';
+import { updateFolderColorsInSupabase } from '../lib/supabaseUser';
 
 export function CreateQuizModal({ 
   isOpen, 
@@ -31,18 +32,30 @@ export function CreateQuizModal({
 
   // Always ensure all bank questions are fetched when the modal opens
   useEffect(() => {
-    if (isOpen && db) {
-      // If we don't have loadedQuestions yet or if questions prop has very few items
+    if (isOpen) {
       if (loadedQuestions.length === 0 && questions.length <= 40) {
         setIsLoadingQuestions(true);
-        getDocs(collection(db, 'questionBank')).then(snap => {
-          const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-          setLoadedQuestions(list);
+        (async () => {
+          try {
+            const { data, error } = await supabase.from('question_bank').select('*').limit(300);
+            if (!error && data && data.length > 0) {
+              const list = data.map((d: any) => ({
+                id: d.id,
+                ...d,
+                mainTag: d.main_tag || d.mainTag,
+                subtags: d.subtags || (d.subtag ? [d.subtag] : []),
+                correctAnswer: d.correct_answer !== undefined ? d.correct_answer : d.correctAnswer
+              }));
+              setLoadedQuestions(list);
+              setIsLoadingQuestions(false);
+              return;
+            }
+          } catch (supaErr) {
+            console.warn("Supabase question bank load for modal fallback:", supaErr);
+          }
+          
           setIsLoadingQuestions(false);
-        }).catch(err => {
-          console.error("Error loading all questions for CreateQuizModal:", err);
-          setIsLoadingQuestions(false);
-        });
+        })();
       }
     }
   }, [isOpen, db, questions.length, loadedQuestions.length]);
@@ -161,7 +174,10 @@ export function CreateQuizModal({
         return item;
       });
 
+      const uniqueId = `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
       const qData: any = {
+        id: uniqueId,
         title: newQuizTitle.trim(),
         questions: quizQuestions,
         userId: auth.currentUser.uid,
@@ -178,16 +194,33 @@ export function CreateQuizModal({
         qData.subtags = modalFilters.subtags;
       }
 
-      await addDoc(collection(db, 'quizzes'), qData);
+      // 1. Insert into Supabase
+      try {
+        await supabase.from('quizzes').insert({
+          id: toValidUUID(uniqueId),
+          user_id: auth.currentUser.uid,
+          title: qData.title,
+          discipline: qData.mainTag || finalFolder || 'Geral',
+          theme: finalFolder || qData.mainTag || 'Geral',
+          tags: qData.subtags || [],
+          questions: quizQuestions,
+          is_public: false,
+          author_name: auth.currentUser.displayName || 'Estudante',
+          author_photo: auth.currentUser.photoURL || '',
+          created_at: qData.createdAt
+        });
+      } catch (supaErr) {
+        console.warn("Supabase insert quiz error:", supaErr);
+      }
+
+      
       
       if (finalFolder) {
         try {
-          const userRef = doc(db, 'users', auth.currentUser.uid);
-          await setDoc(userRef, {
-            folderColors: {
-              [finalFolder]: newQuizColor
-            }
-          }, { merge: true });
+          const { data: supaUser } = await supabase.from('users').select('folder_colors').eq('id', auth.currentUser.uid).maybeSingle();
+          const currentColors = supaUser?.folder_colors || {};
+          const newColors = { ...currentColors, [finalFolder]: newQuizColor };
+          await updateFolderColorsInSupabase(auth.currentUser.uid, newColors);
         } catch (colorErr) {
           console.warn("Could not save folder color to user profile:", colorErr);
         }

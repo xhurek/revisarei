@@ -1,15 +1,15 @@
 import { CreateQuizModal } from './CreateQuizModal';
 import React, { useState, useEffect, useRef } from 'react';
-import { collection, getDocs, addDoc, doc, deleteDoc, updateDoc, setDoc, query, orderBy, limit, onSnapshot, getDoc, where, startAfter } from 'firebase/firestore';
+import { collection, getCountFromServer, getDocs, addDoc, doc, deleteDoc, updateDoc, setDoc, query, orderBy, limit, onSnapshot, getDoc, where, startAfter } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType, apiFetch, parseJsonResponse } from '../lib/firebase';
 import { BankQuestion } from '../types';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Plus, Save, Trash2, X, Edit2, Check, UploadCloud, Eye, Image as ImageIcon, Brain, Tag, AlertTriangle, BookOpen, Wand2, Compass, Heart, User as UserIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { supabase, toValidUUID, generateUUID } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 import { AdvancedPdfBatchImport } from './AdvancedPdfBatchImport';
 import { fixPdfLigatures, sanitizeQuestionFields, checkQuestionFormatting } from '../lib/textSanitizer';
-import { getCachedBankTags, setCachedBankTags, hasCachedBankTags, fetchBankTagsFromSupabase, BankTagItem, DEFAULT_BANK_TAGS } from '../lib/staticCache';
+import { getCachedBankTags, setCachedBankTags, hasCachedBankTags, BankTagItem, DEFAULT_BANK_TAGS } from '../lib/staticCache';
 
 let memoryCachedQuestions: BankQuestion[] | null = null;
 
@@ -61,34 +61,28 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
 
   useEffect(() => {
     if (isCreateQuizModalOpen && modalBankQuestions.length <= 40) {
-      (async () => {
-        try {
-          const { data: snap } = await supabase.from('question_bank').select('*').limit(100);
-        if (!snap) return;
-        const list = snap.map((doc: any) => ({ id: doc.id, ...doc, correctAnswer: doc.correct_answer, mainTag: doc.main_tag } as any));
+      getDocs(collection(db, 'questionBank')).then(snap => {
+        const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankQuestion));
         setModalBankQuestions(list);
         try { sessionStorage.setItem('cached_full_questionBank', JSON.stringify(list)); } catch {}
-      } catch(err) {
-          console.error("Error loading questions for quiz modal:", err);
-        }
-      })();
+      }).catch(err => {
+        console.error("Error loading questions for quiz modal:", err);
+      });
     }
   }, [isCreateQuizModalOpen, modalBankQuestions.length]);
 
   useEffect(() => {
     if (isCreateQuizModalOpen) {
-        (async () => {
-          const { data: snap } = await supabase.from('users').select('*').eq('id', auth.currentUser!.uid).single();
-            if (snap) {
-                setUserFolders(snap.folderColors || {});
-                setUserData(snap);
+        getDoc(doc(db, 'users', auth.currentUser!.uid)).then(snap => {
+            if (snap.exists()) {
+                setUserFolders(snap.data().folderColors || {});
+                setUserData(snap.data());
             }
-        })();
+        });
     } else if (auth.currentUser && !userData) {
-        (async () => {
-          const { data: snap } = await supabase.from('users').select('*').eq('id', auth.currentUser!.uid).single();
-            if (snap) setUserData(snap);
-        })();
+        getDoc(doc(db, 'users', auth.currentUser.uid)).then(snap => {
+            if (snap.exists()) setUserData(snap.data());
+        });
     }
   }, [isCreateQuizModalOpen, auth.currentUser]);
 
@@ -97,20 +91,12 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
       setComments([]);
       const fetchComments = async () => {
         try {
-          const { data: cData } = await supabase.from('comments').select('*').eq('question_id', selectedQuestionForComments.id);
-          const fetched = (cData || []).map((d: any) => ({ 
-            id: d.id, 
-            quizId: d.quiz_id, 
-            questionId: d.question_id, 
-            quizTitle: d.quiz_title, 
-            text: d.text, 
-            userId: d.user_id, 
-            userName: d.user_name, 
-            userPhoto: d.user_photo, 
-            userTitle: d.user_title, 
-            likes: d.likes || [], 
-            createdAt: d.created_at 
-          }));
+          const q = query(
+            collection(db, 'comments'),
+            where('questionId', '==', selectedQuestionForComments.id)
+          );
+          const snapshot = await getDocs(q);
+          const fetched = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
           fetched.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
           setComments(fetched);
         } catch (err) {
@@ -136,19 +122,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
         likes: [],
         createdAt: new Date().toISOString()
       };
-      const { data: inserted } = await supabase.from('comments').insert([{
-        quiz_id: commentData.quizId,
-        question_id: commentData.questionId,
-        quiz_title: commentData.quizTitle,
-        text: commentData.text,
-        user_id: commentData.userId,
-        user_name: commentData.userName,
-        user_photo: commentData.userPhoto,
-        user_title: commentData.userTitle,
-        likes: commentData.likes,
-        created_at: commentData.createdAt
-      }]).select();
-      const docRef = { id: inserted?.[0]?.id || 'unknown' };
+      const docRef = await addDoc(collection(db, 'comments'), commentData);
       setComments(prev => [...prev, { ...commentData, id: docRef.id }]);
       setNewComment('');
     } catch (err) {
@@ -174,11 +148,11 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
     }));
 
     try {
-      
+      const commentRef = doc(db, 'comments', commentId);
       if (isLiked) {
-        await supabase.from('comments').update({ likes: currentLikes.filter(id => id !== uid) }).eq('id', commentId);
+        await updateDoc(commentRef, { likes: currentLikes.filter(id => id !== uid) });
       } else {
-        await supabase.from('comments').update({ likes: [...currentLikes, uid] }).eq('id', commentId);
+        await updateDoc(commentRef, { likes: [...currentLikes, uid] });
       }
     } catch (err) {
       console.error("Error toggling comment like:", err);
@@ -195,18 +169,24 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
   const [hasSearched, setHasSearched] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const snap = await supabase.from('question_bank').select('*', { count: 'exact', head: true });
-      setTotalQuestionsCount(snap.count);
-    } catch(err) {
-        console.warn("Could not load total questions count:", err);
-      }
-    })();
+    getCountFromServer(collection(db, 'questionBank')).then(snap => {
+      setTotalQuestionsCount(snap.data().count);
+    }).catch(err => {
+      console.warn("Could not load total questions count:", err);
+    });
 
     if (!hasCachedBankTags()) {
-      fetchBankTagsFromSupabase().then(tags => {
-        setAvailableTags(tags);
+      getDocs(collection(db, 'bankTags')).then(snap => {
+        if (!snap.empty) {
+          const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankTagItem));
+          setAvailableTags(list);
+          setCachedBankTags(list);
+        } else {
+          setAvailableTags(DEFAULT_BANK_TAGS);
+          setCachedBankTags(DEFAULT_BANK_TAGS);
+        }
+      }).catch(err => {
+        console.warn("Could not load bankTags from Firestore, using default:", err);
       });
     }
 
@@ -307,7 +287,35 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
         
         // Disable load more for fallback in UI hack, we use length for offset instead
         setLastVisible(supaList.length === 30 ? "SUPABASE_HAS_MORE" : null); 
-      }setLoading(false);
+      } else {
+        if (!isLoadMore) {
+          const flaggedQ = query(collection(db, 'questionBank'), where('hasImageWarning', '==', true), limit(20));
+          const flaggedSnap = await getDocs(flaggedQ);
+          loaded = flaggedSnap.docs.map(d => ({ id: d.id, ...d.data() } as BankQuestion));
+        }
+
+        let normalQ = query(collection(db, 'questionBank'), orderBy('createdAt', 'desc'), limit(30));
+        if (isLoadMore && lastVisible && lastVisible !== "SUPABASE_HAS_MORE") {
+          normalQ = query(collection(db, 'questionBank'), orderBy('createdAt', 'desc'), startAfter(lastVisible), limit(30));
+        }
+
+        const snap = await getDocs(normalQ);
+        if (!snap.empty) {
+          setLastVisible(snap.docs[snap.docs.length - 1]);
+          const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankQuestion));
+          
+          const all = isLoadMore ? [...questions, ...list] : [...loaded, ...list];
+          const unique = Array.from(new Map(all.map(item => [item.id, item])).values());
+          
+          memoryCachedQuestions = unique;
+          try { sessionStorage.setItem('cached_admin_questionBank', JSON.stringify(unique)); } catch {}
+          setQuestions(unique);
+        } else if (!isLoadMore) {
+          memoryCachedQuestions = loaded;
+          setQuestions(loaded);
+        }
+      }
+      setLoading(false);
       setLoadingMore(false);
       setQuotaExceeded(false);
     } catch (err: any) {
@@ -364,7 +372,21 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
         console.warn("Supabase search error:", supaErr);
       }
 
-      } catch (err: any) {
+      if (!usedSupabase) {
+        let q;
+        if (filterMainTag) {
+          q = query(collection(db, 'questionBank'), where('mainTag', '==', filterMainTag), limit(1000));
+        } else {
+          q = query(collection(db, 'questionBank'), limit(1000));
+        }
+
+        const snap = await getDocs(q);
+        const list = snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as BankQuestion));
+        setQuestions(list);
+        setHasSearched(true);
+        setQuotaExceeded(false);
+      }
+    } catch (err: any) {
       console.error(err);
       if (err?.message?.includes('Quota limit exceeded')) setQuotaExceeded(true);
     } finally {
@@ -381,10 +403,9 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
     setIsFixingLigatures(true);
     try {
       let fixedCount = 0;
-      const { data: snap } = await supabase.from('question_bank').select('*');
-      if (!snap) return;
-      for (const docSnap of snap) {
-        const q = { id: docSnap.id, ...docSnap, correctAnswer: docSnap.correct_answer, mainTag: docSnap.main_tag } as any;
+      const snap = await getDocs(collection(db, 'questionBank'));
+      for (const docSnap of snap.docs) {
+        const q = { id: docSnap.id, ...docSnap.data() } as BankQuestion;
         const sanitized = sanitizeQuestionFields(q);
         
         const textChanged = sanitized.text !== q.text;
@@ -407,7 +428,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
           if (sanitized.subtag !== undefined) updateObj.subtag = sanitized.subtag;
           if (sanitized.subtags !== undefined) updateObj.subtags = sanitized.subtags;
 
-          await supabase.from('question_bank').update(updateObj).eq('id', q.id!);
+          await updateDoc(doc(db, 'questionBank', q.id!), updateObj);
           fixedCount++;
         }
       }
@@ -634,27 +655,31 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
                       onCancel={() => setEditingId(null)}
                       onSave={async (updatedQ) => {
                         try {
-                          const { error: upErr } = await supabase.from('question_bank').update({
-                            text: updatedQ.text,
-                            options: updatedQ.options,
-                            correct_answer: updatedQ.correctAnswer,
-                            explanation: updatedQ.explanation,
-                            images: updatedQ.images,
-                            main_tag: updatedQ.mainTag || '',
-                            discipline: updatedQ.mainTag || '',
-                            subtag: updatedQ.subtag || '',
-                            theme: updatedQ.subtag || '',
-                            subtags: updatedQ.subtags || [],
-                            tags: updatedQ.subtags || [],
-                            institution: updatedQ.institution || '',
-                            year: updatedQ.year || '',
-                            has_image_warning: !!updatedQ.hasImageWarning
-                          }).eq('id', q.id);
-                          if (upErr) throw upErr;
+                          try {
+                            await supabase.from('question_bank').update({
+                              text: updatedQ.text,
+                              options: updatedQ.options,
+                              correct_answer: updatedQ.correctAnswer,
+                              explanation: updatedQ.explanation,
+                              images: updatedQ.images,
+                              main_tag: updatedQ.mainTag || '',
+                              discipline: updatedQ.mainTag || '',
+                              subtag: updatedQ.subtag,
+                              theme: updatedQ.subtag || '',
+                              subtags: updatedQ.subtags || [],
+                              tags: updatedQ.subtags || [],
+                              institution: updatedQ.institution,
+                              year: updatedQ.year,
+                              has_image_warning: updatedQ.hasImageWarning
+                            }).eq('id', q.id);
+                          } catch (sErr) {
+                            console.warn("Supabase update question error:", sErr);
+                          }
+                          await updateDoc(doc(db, 'questionBank', q.id!), { ...updatedQ });
                           setQuestions(questions.map(x => x.id === q.id ? updatedQ : x));
                           setEditingId(null);
                         } catch (err: any) {
-                          alert(err.message || 'Erro ao atualizar questão');
+                          handleFirestoreError(err, OperationType.UPDATE, `questionBank/${q.id}`);
                         }
                       }}
                     />
@@ -680,32 +705,22 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
                             if (!sanitized.options || sanitized.options.length < 4) {
                               sanitized.options = ['A) ', 'B) ', 'C) ', 'D) '];
                             }
-                          }
-                          try {
-                            const { error: upErr } = await supabase.from('question_bank').update({
-                              text: sanitized.text,
-                              options: sanitized.options,
-                              correct_answer: sanitized.correctAnswer,
-                              explanation: sanitized.explanation,
-                              images: sanitized.images,
-                              main_tag: sanitized.mainTag || '',
-                              discipline: sanitized.mainTag || '',
-                              subtag: sanitized.subtag || '',
-                              theme: sanitized.subtag || '',
-                              subtags: sanitized.subtags || [],
-                              tags: sanitized.subtags || [],
-                              institution: sanitized.institution || '',
-                              year: sanitized.year || '',
-                              has_image_warning: !!sanitized.hasImageWarning
-                            }).eq('id', q.id);
-                            if (upErr) throw upErr;
-                            setQuestions(questions.map(x => x.id === q.id ? { ...x, ...sanitized } : x));
-                            if (validOpts.length < 2) {
-                              setEditingId(q.id!);
+                            try {
+                              try { await supabase.from('question_bank').update({ options: sanitized.options, text: sanitized.text }).eq('id', q.id); } catch(e){}
+                              await updateDoc(doc(db, 'questionBank', q.id!), { ...sanitized });
+                              setQuestions(questions.map(x => x.id === q.id ? { ...x, ...sanitized } : x));
+                            } catch (e) {
+                              console.error(e);
                             }
-                          } catch (err: any) {
-                            console.error(err);
-                            alert(err.message || 'Erro ao corrigir questão');
+                            setEditingId(q.id!);
+                          } else {
+                            try {
+                              try { await supabase.from('question_bank').update({ options: sanitized.options, text: sanitized.text }).eq('id', q.id); } catch(e){}
+                              await updateDoc(doc(db, 'questionBank', q.id!), { ...sanitized });
+                              setQuestions(questions.map(x => x.id === q.id ? { ...x, ...sanitized } : x));
+                            } catch (err) {
+                              console.error(err);
+                            }
                           }
                         }}
                         className="bg-amber-600 hover:bg-amber-700 text-white text-[11px] px-3 py-1.5 rounded-lg font-bold transition shadow-sm shrink-0 flex items-center gap-1"
@@ -794,7 +809,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
                              if (confirm('Excluir esta questão?')) {
                                try {
                                  try { await supabase.from('question_bank').delete().eq('id', q.id); } catch(e){}
-                                 await supabase.from('question_bank').delete().eq('id', q.id!);
+                                 await deleteDoc(doc(db, 'questionBank', q.id!));
                                  setQuestions(questions.filter(x => x.id !== q.id));
                                } catch (err: any) {
                                  handleFirestoreError(err, OperationType.DELETE, `questionBank/${q.id}`);
@@ -1469,40 +1484,45 @@ export function AddQuestionsView({
       } else {
         for (const q of staging) {
           const docData = sanitizeQuestionFields({ ...q });
-          const newId = toValidUUID(docData.id || generateUUID());
+          const newId = docData.id || `bank_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
           delete docData.id;
           docData.createdAt = new Date().toISOString();
           docData.createdBy = auth.currentUser?.uid || 'unknown';
           
-          const { error: insErr } = await supabase.from('question_bank').insert({
-            id: newId,
-            text: docData.text,
-            options: docData.options || [],
-            correct_answer: docData.correctAnswer || '',
-            explanation: docData.explanation || '',
-            images: docData.images || [],
-            main_tag: docData.mainTag || docData.discipline || 'Geral',
-            discipline: docData.mainTag || docData.discipline || 'Geral',
-            subtag: docData.subtag || '',
-            theme: docData.subtag || '',
-            subtags: docData.subtags || [],
-            tags: docData.subtags || [],
-            institution: docData.institution || '',
-            year: docData.year || '',
-            has_image_warning: !!docData.hasImageWarning,
-            created_at: docData.createdAt,
-            created_by: docData.createdBy
-          });
-
-          if (insErr) {
-            console.error("Supabase insert question error:", insErr);
-            throw insErr;
+          try {
+            await supabase.from('question_bank').insert({
+              id: newId,
+              text: docData.text,
+              options: docData.options || [],
+              correct_answer: docData.correctAnswer || '',
+              explanation: docData.explanation || '',
+              images: docData.images || [],
+              main_tag: docData.mainTag || docData.discipline || 'Geral',
+              discipline: docData.mainTag || docData.discipline || 'Geral',
+              subtag: docData.subtag || '',
+              theme: docData.subtag || '',
+              subtags: docData.subtags || [],
+              tags: docData.subtags || [],
+              institution: docData.institution || '',
+              year: docData.year || '',
+              has_image_warning: !!docData.hasImageWarning,
+              created_at: docData.createdAt,
+              created_by: docData.createdBy
+            });
+          } catch(e) {
+            console.warn("Supabase insert question error:", e);
           }
+
+          await updateDoc(doc(db, 'questionBank', newId), docData).catch(() => setDoc(doc(db, 'questionBank', newId), docData));
         }
         onAdded();
       }
     } catch (err: any) {
-      alert(err.message || 'Erro ao salvar questões no banco de dados');
+      if (!onSaveToDatabase) {
+        handleFirestoreError(err, OperationType.CREATE, 'questionBank');
+      } else {
+        alert(err.message || 'Erro ao salvar');
+      }
     } finally {
       setSaving(false);
     }
@@ -2332,9 +2352,10 @@ function TagManagerView({
   const handleAddTag = async () => {
     if (!newTagName.trim()) return;
     try {
-      const { data: tagData, error: tagErr } = await supabase.from('bank_tags').insert([{ name: newTagName.trim(), subtags: [] }]).select();
-      if (tagErr) throw tagErr;
-      const docRef = { id: tagData[0].id };
+      const docRef = await addDoc(collection(db, 'bankTags'), {
+        name: newTagName.trim(),
+        subtags: []
+      });
       const updated = [...availableTags, { id: docRef.id, name: newTagName.trim(), subtags: [] }].sort((a, b) => a.name.localeCompare(b.name));
       setCachedBankTags(updated);
       setNewTagName('');
@@ -2346,26 +2367,26 @@ function TagManagerView({
   const handleRenameTag = async (id: string) => {
     if (!editingTagName.trim()) return;
     try {
-      await supabase.from('bank_tags').update({
+      await updateDoc(doc(db, 'bankTags', id), {
         name: editingTagName.trim()
-      }).eq('id', id);
+      });
       const updated = availableTags.map(t => t.id === id ? { ...t, name: editingTagName.trim() } : t).sort((a, b) => a.name.localeCompare(b.name));
       setCachedBankTags(updated);
       setEditingTagId(null);
     } catch (err: any) {
-      console.warn("Erro ao renomear tag no Supabase:", err);
+      handleFirestoreError(err, OperationType.UPDATE, `bankTags/${id}`);
     }
   };
 
   const handleDeleteTag = async (id: string, name: string) => {
     if (confirm(`Tem certeza que deseja excluir a área "${name}"? Isso não apagará as questões do banco, mas removerá a tag de seleção.`)) {
       try {
-        await supabase.from('bank_tags').delete().eq('id', id);
+        await deleteDoc(doc(db, 'bankTags', id));
         const updated = availableTags.filter(t => t.id !== id);
         setCachedBankTags(updated);
         if (activeTagForSubtags === id) setActiveTagForSubtags(null);
       } catch (err: any) {
-        console.warn("Erro ao excluir tag no Supabase:", err);
+        handleFirestoreError(err, OperationType.DELETE, `bankTags/${id}`);
       }
     }
   };
@@ -2380,14 +2401,14 @@ function TagManagerView({
     }
     try {
       const newSubtags = [...tag.subtags, newSubtagName.trim()];
-      await supabase.from('bank_tags').update({
+      await updateDoc(doc(db, 'bankTags', tagId), {
         subtags: newSubtags
-      }).eq('id', tagId);
+      });
       const updated = availableTags.map(t => t.id === tagId ? { ...t, subtags: newSubtags } : t);
       setCachedBankTags(updated);
       setNewSubtagName('');
     } catch (err: any) {
-      console.warn("Erro ao adicionar subtag no Supabase:", err);
+      handleFirestoreError(err, OperationType.UPDATE, `bankTags/${tagId}`);
     }
   };
 
@@ -2396,13 +2417,13 @@ function TagManagerView({
     if (!tag) return;
     try {
       const newSubtags = tag.subtags.filter(s => s !== subtagToDelete);
-      await supabase.from('bank_tags').update({
+      await updateDoc(doc(db, 'bankTags', tagId), {
         subtags: newSubtags
-      }).eq('id', tagId);
+      });
       const updated = availableTags.map(t => t.id === tagId ? { ...t, subtags: newSubtags } : t);
       setCachedBankTags(updated);
     } catch (err: any) {
-      console.warn("Erro ao excluir subtag no Supabase:", err);
+      handleFirestoreError(err, OperationType.UPDATE, `bankTags/${tagId}`);
     }
   };
 

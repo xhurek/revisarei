@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Globe, 
   Search, 
@@ -13,7 +13,6 @@ import {
   FileText, 
   CheckCircle2, 
   X, 
-  ListOrdered, 
   Check, 
   Sparkles, 
   Layers, 
@@ -22,24 +21,44 @@ import {
   Eye,
   Clock,
   Flame,
-  Bookmark
+  Bookmark,
+  ChevronRight,
+  ExternalLink,
+  BookMarked
 } from 'lucide-react';
-import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, where, getDocs, addDoc, updateDoc, setDoc, doc, increment, arrayUnion, arrayRemove } from 'firebase/firestore';
-import { Quiz, StudyNote } from '../types';
+import { auth } from '../lib/firebase';
+import { supabase, toValidUUID } from '../lib/supabase';
+import { Quiz, StudyNote, Flashcard } from '../types';
 import { cn } from '../lib/utils';
 import { PREDEFINED_MAIN_TAGS } from './QuizzesView';
 import { UserTitleBadge } from './UserTitleBadge';
+import { importFlashcardsBatchToSupabase } from '../lib/supabaseFlashcards';
 
 interface CommunityViewProps {
   onSelectQuiz?: (quiz: Quiz) => void;
+  onSelectFlashcardDeck?: (deckTitle: string, cards: Flashcard[]) => void;
 }
 
-type ContentFilterType = 'all' | 'notes' | 'quizzes';
+type ContentFilterType = 'all' | 'notes' | 'quizzes' | 'flashcards';
+
+interface PublicFlashcardDeck {
+  id: string;
+  userId: string;
+  title: string;
+  description?: string;
+  tags: string[];
+  cards: Flashcard[];
+  isPublic: boolean;
+  authorName: string;
+  authorPhoto?: string;
+  authorTitle?: string;
+  createdAt: string;
+  likes: string[];
+}
 
 interface CombinedCommunityItem {
   id: string;
-  itemType: 'studyNote' | 'quiz';
+  itemType: 'studyNote' | 'quiz' | 'flashcard';
   title: string;
   category: string;
   subtags: string[];
@@ -51,11 +70,13 @@ interface CombinedCommunityItem {
   // Specific data
   studyNote?: StudyNote;
   quiz?: Quiz;
+  flashcardDeck?: PublicFlashcardDeck;
 }
 
-export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
+export function CommunityView({ onSelectQuiz, onSelectFlashcardDeck }: CommunityViewProps) {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [studyNotes, setStudyNotes] = useState<StudyNote[]>([]);
+  const [flashcardDecks, setFlashcardDecks] = useState<PublicFlashcardDeck[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<ContentFilterType>('all');
@@ -66,8 +87,11 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
   // Reading modal for study notes
   const [readingNote, setReadingNote] = useState<StudyNote | null>(null);
   const [readingToc, setReadingToc] = useState<{ id: string; text: string }[]>([]);
+
+  // Preview modal for flashcard decks
+  const [previewDeck, setPreviewDeck] = useState<PublicFlashcardDeck | null>(null);
   
-  // Toast notifications
+  // Toast notifications & saved items state
   const [toastInfo, setToastInfo] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
 
@@ -75,37 +99,104 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
     fetchCommunityData();
   }, []);
 
-  // Lock background scrolling when reader modal is active
+  // Lock background scrolling when modal is active
   useEffect(() => {
-    if (readingNote) {
+    if (readingNote || previewDeck) {
       const originalOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
       return () => {
         document.body.style.overflow = originalOverflow;
       };
     }
-  }, [readingNote]);
+  }, [readingNote, previewDeck]);
 
   const fetchCommunityData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch public quizzes
-      const qQuizzes = query(
-        collection(db, 'quizzes'),
-        where('isPublic', '==', true)
-      );
-      const quizSnapshot = await getDocs(qQuizzes);
-      let fetchedQuizzes: Quiz[] = quizSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Quiz));
-      setQuizzes(fetchedQuizzes);
+      const [qRes, nRes, fRes, lRes, uRes] = await Promise.all([
+        supabase.from('quizzes').select('*').eq('is_public', true),
+        supabase.from('study_notes').select('*').eq('is_public', true),
+        supabase.from('flashcards').select('*').eq('is_public', true),
+        supabase.from('likes').select('*'),
+        supabase.from('users').select('*')
+      ]);
 
-      // 2. Fetch public study notes
-      const qNotes = collection(db, 'publicStudyNotes');
-      const notesSnapshot = await getDocs(qNotes);
-      let fetchedNotes: StudyNote[] = notesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as StudyNote));
-      setStudyNotes(fetchedNotes);
+      const userMap: Record<string, any> = {};
+      if (uRes.data) {
+        uRes.data.forEach((u: any) => { userMap[u.id] = u; });
+      }
 
+      const likesMap: Record<string, string[]> = {};
+      if (lRes.data) {
+        lRes.data.forEach((l: any) => {
+          if (!likesMap[l.item_id]) likesMap[l.item_id] = [];
+          likesMap[l.item_id].push(l.user_id);
+        });
+      }
+
+      // 1. Quizzes
+      const mappedQuizzes: Quiz[] = (qRes.data || []).map((row: any) => {
+        const author = userMap[row.user_id];
+        return {
+          id: row.id,
+          userId: row.user_id,
+          title: row.title,
+          description: row.description || '',
+          subject: row.subject || '',
+          tag: row.theme || row.discipline || '',
+          mainTag: row.discipline || row.theme || '',
+          subtags: Array.isArray(row.tags) ? row.tags : [],
+          questions: Array.isArray(row.questions) ? row.questions : [],
+          isPublic: true,
+          likes: likesMap[row.id] || [],
+          authorName: author?.name || row.author_name || 'Estudante',
+          authorPhoto: author?.photo_url || row.author_photo,
+          authorTitle: author?.title || row.author_title || 'Calouro',
+          createdAt: row.created_at
+        } as Quiz;
+      });
+
+      // 2. Study Notes
+      const mappedNotes: StudyNote[] = (nRes.data || []).map((row: any) => {
+        const author = userMap[row.user_id];
+        return {
+          id: row.id,
+          userId: row.user_id,
+          title: row.title,
+          content: row.content,
+          folder: Array.isArray(row.tags) && row.tags.length > 0 ? row.tags[0] : (row.summary || 'Geral'),
+          isPublic: true,
+          likes: likesMap[row.id] || [],
+          authorName: author?.name || row.author_name || 'Estudante',
+          authorPhoto: author?.photo_url || row.author_photo,
+          authorTitle: author?.title || row.author_title || 'Calouro',
+          createdAt: row.created_at
+        } as StudyNote;
+      });
+
+      // 3. Flashcards
+      const mappedDecks: PublicFlashcardDeck[] = (fRes.data || []).map((row: any) => {
+        const author = userMap[row.user_id];
+        return {
+          id: row.id,
+          userId: row.user_id,
+          title: row.title || 'Baralho sem título',
+          description: row.description || '',
+          tags: Array.isArray(row.tags) ? row.tags : [],
+          cards: Array.isArray(row.cards) ? row.cards : [],
+          isPublic: true,
+          likes: likesMap[row.id] || [],
+          authorName: author?.name || row.author_name || 'Estudante',
+          authorPhoto: author?.photo_url || row.author_photo,
+          authorTitle: author?.title || row.author_title || 'Calouro',
+          createdAt: row.created_at
+        };
+      });
+
+      setQuizzes(mappedQuizzes);
+      setStudyNotes(mappedNotes);
+      setFlashcardDecks(mappedDecks);
     } catch (err) {
-      handleFirestoreError(err, OperationType.GET, 'community');
       console.error("Error fetching community data:", err);
     } finally {
       setLoading(false);
@@ -114,12 +205,14 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
 
   const handleToggleLike = async (item: CombinedCommunityItem) => {
     if (!auth.currentUser) {
-      alert('Faça login para curtir cadernos!');
+      alert('Faça login para curtir cadernos e conteúdos!');
       return;
     }
     const uid = auth.currentUser.uid;
     const isLiked = item.likes.includes(uid);
+    const validUUID = toValidUUID(item.id);
 
+    // Optimistic UI updates
     if (item.itemType === 'quiz') {
       setQuizzes(prev => prev.map(q => {
         if (q.id !== item.id) return q;
@@ -129,14 +222,17 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
       }));
 
       try {
-        const quizRef = doc(db, 'quizzes', item.id);
-        await setDoc(quizRef, {
-          likes: isLiked ? arrayRemove(uid) : arrayUnion(uid)
-        }, { merge: true });
-      } catch (err) {
-        console.error("Error toggling quiz like:", err);
+        if (isLiked) {
+          await supabase.from('likes').delete().match({ user_id: uid, item_id: validUUID, item_type: 'quiz' });
+          await supabase.from('quizzes').update({ likes_count: Math.max(0, item.likes.length - 1) }).eq('id', validUUID);
+        } else {
+          await supabase.from('likes').upsert({ id: toValidUUID(`${uid}_${item.id}_quiz`), user_id: uid, item_id: validUUID, item_type: 'quiz' });
+          await supabase.from('quizzes').update({ likes_count: item.likes.length + 1 }).eq('id', validUUID);
+        }
+      } catch (supaLikeErr) {
+        console.warn("Supabase like sync error:", supaLikeErr);
       }
-    } else {
+    } else if (item.itemType === 'studyNote') {
       setStudyNotes(prev => prev.map(n => {
         if (n.id !== item.id) return n;
         const currentLikes = n.likes || [];
@@ -145,12 +241,34 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
       }));
 
       try {
-        const noteRef = doc(db, 'publicStudyNotes', item.id);
-        await setDoc(noteRef, {
-          likes: isLiked ? arrayRemove(uid) : arrayUnion(uid)
-        }, { merge: true });
-      } catch (err) {
-        console.error("Error toggling note like:", err);
+        if (isLiked) {
+          await supabase.from('likes').delete().match({ user_id: uid, item_id: validUUID, item_type: 'study_note' });
+          await supabase.from('study_notes').update({ likes_count: Math.max(0, item.likes.length - 1) }).eq('id', validUUID);
+        } else {
+          await supabase.from('likes').upsert({ id: toValidUUID(`${uid}_${item.id}_study_note`), user_id: uid, item_id: validUUID, item_type: 'study_note' });
+          await supabase.from('study_notes').update({ likes_count: item.likes.length + 1 }).eq('id', validUUID);
+        }
+      } catch (supaLikeErr) {
+        console.warn("Supabase like sync error:", supaLikeErr);
+      }
+    } else if (item.itemType === 'flashcard') {
+      setFlashcardDecks(prev => prev.map(f => {
+        if (f.id !== item.id) return f;
+        const currentLikes = f.likes || [];
+        const updatedLikes = isLiked ? currentLikes.filter(id => id !== uid) : [...currentLikes, uid];
+        return { ...f, likes: updatedLikes };
+      }));
+
+      try {
+        if (isLiked) {
+          await supabase.from('likes').delete().match({ user_id: uid, item_id: validUUID, item_type: 'flashcard' });
+          await supabase.from('flashcards').update({ likes_count: Math.max(0, item.likes.length - 1) }).eq('id', validUUID);
+        } else {
+          await supabase.from('likes').upsert({ id: toValidUUID(`${uid}_${item.id}_flashcard`), user_id: uid, item_id: validUUID, item_type: 'flashcard' });
+          await supabase.from('flashcards').update({ likes_count: item.likes.length + 1 }).eq('id', validUUID);
+        }
+      } catch (supaLikeErr) {
+        console.warn("Supabase like sync error:", supaLikeErr);
       }
     }
   };
@@ -198,28 +316,32 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
       return;
     }
     try {
-      const newQuiz = { 
-        ...quiz, 
-        userId: auth.currentUser.uid, 
-        isPublic: false, 
-        createdAt: new Date().toISOString() 
-      };
-      delete newQuiz.id;
-      
-      await addDoc(collection(db, 'quizzes'), newQuiz);
+      const uniqueId = `quiz_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      await supabase.from('quizzes').insert({
+        id: toValidUUID(uniqueId),
+        user_id: auth.currentUser.uid,
+        title: quiz.title,
+        description: (quiz as any).description || '',
+        subject: (quiz as any).subject || '',
+        discipline: quiz.mainTag || '',
+        theme: quiz.tag || '',
+        tags: Array.isArray(quiz.subtags) ? quiz.subtags : [],
+        questions: quiz.questions || [],
+        is_public: false,
+        author_name: auth.currentUser.displayName || 'Estudante',
+        created_at: new Date().toISOString()
+      });
 
-      try {
-        const statsRef = doc(db, 'users', auth.currentUser.uid, 'stats', 'main');
-        await updateDoc(statsRef, { saves_total: increment(1) });
-      } catch (statErr) {
-        console.error("Error updating saves stat", statErr);
+      supabase.rpc('increment_saves_total', { user_id: auth.currentUser.uid }).then(({ error }) => {
+        if (error) console.warn("Error updating saves stat:", error);
+      });
+
+      if (quiz.id) {
+        setSavedIds(prev => new Set(prev).add(quiz.id!));
       }
-
-      setSavedIds(prev => new Set(prev).add(quiz.id!));
       setToastInfo('Teste adicionado a "Meus testes"! Você pode praticar e editá-lo à vontade.');
       setTimeout(() => setToastInfo(null), 4000);
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.CREATE, 'quizzes');
       alert('Erro ao salvar caderno: ' + err.message);
     }
   };
@@ -230,25 +352,21 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
       return;
     }
     try {
-      const forkedNote: StudyNote = {
+      const uniqueId = `note_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      await supabase.from('study_notes').insert({
+        id: toValidUUID(uniqueId),
+        user_id: auth.currentUser.uid,
         title: note.title,
         content: note.content,
-        folder: note.folder || 'Importados',
-        userId: auth.currentUser.uid,
-        createdAt: new Date().toISOString(),
-        createdBy: auth.currentUser.uid,
-        isPublic: false,
-        originalNoteId: note.id
-      };
+        tags: note.folder ? [note.folder] : ['Importados'],
+        is_public: false,
+        author_name: auth.currentUser.displayName || 'Estudante',
+        created_at: new Date().toISOString()
+      });
 
-      await addDoc(collection(db, `users/${auth.currentUser.uid}/studyNotes`), forkedNote);
-
-      try {
-        const statsRef = doc(db, 'users', auth.currentUser.uid, 'stats', 'main');
-        await updateDoc(statsRef, { saves_total: increment(1) });
-      } catch (statErr) {
-        console.error("Error updating saves stat", statErr);
-      }
+      supabase.rpc('increment_saves_total', { user_id: auth.currentUser.uid }).then(({ error }) => {
+        if (error) console.warn("Error updating saves stat:", error);
+      });
 
       if (note.id) {
         setSavedIds(prev => new Set(prev).add(note.id!));
@@ -256,8 +374,36 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
       setToastInfo('Caderno salvo em "Cadernos de Estudo"! Você pode editar sua cópia sem alterar o original.');
       setTimeout(() => setToastInfo(null), 5000);
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.CREATE, `users/${auth.currentUser.uid}/studyNotes`);
       alert('Erro ao salvar caderno: ' + err.message);
+    }
+  };
+
+  const handleSaveFlashcardDeck = async (deck: PublicFlashcardDeck) => {
+    if (!auth.currentUser) {
+      alert('Faça login para salvar baralhos de flashcards!');
+      return;
+    }
+    try {
+      const cardsToImport = deck.cards.map(c => ({
+        ...c,
+        id: `fc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        tag: deck.title,
+        userId: auth.currentUser?.uid,
+        nextReview: new Date().toISOString(),
+        interval: 0,
+        easeFactor: 2.5
+      }));
+
+      await importFlashcardsBatchToSupabase(auth.currentUser.uid, cardsToImport);
+      supabase.rpc('increment_saves_total', { user_id: auth.currentUser.uid }).then(({ error }) => {
+        if (error) console.warn("Error updating saves stat:", error);
+      });
+
+      setSavedIds(prev => new Set(prev).add(deck.id));
+      setToastInfo(`Baralho "${deck.title}" com ${cardsToImport.length} flashcards salvo nos seus Flashcards!`);
+      setTimeout(() => setToastInfo(null), 5000);
+    } catch (err: any) {
+      alert('Erro ao salvar baralho: ' + err.message);
     }
   };
 
@@ -288,7 +434,7 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
 
   const isAnyFilterActive = searchQuery !== '' || filterType !== 'all' || filterMainTag !== '' || filterSubtag !== '' || sortBy !== 'recent';
 
-  // Convert quizzes and study notes into unified items
+  // Convert quizzes, notes, and flashcards into unified feed items
   const combinedItems: CombinedCommunityItem[] = [
     ...studyNotes.map(n => ({
       id: n.id || Math.random().toString(),
@@ -298,7 +444,7 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
       subtags: [],
       authorName: n.authorName || 'Estudante',
       authorPhoto: n.authorPhoto,
-      authorTitle: n.authorTitle || 'Estudante',
+      authorTitle: n.authorTitle || 'Calouro',
       createdAt: n.createdAt || '',
       likes: n.likes || [],
       studyNote: n
@@ -313,201 +459,227 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
                ((q as any).subtag ? [(q as any).subtag] : []),
       authorName: (q as any).authorName || 'Estudante',
       authorPhoto: (q as any).authorPhoto,
-      authorTitle: (q as any).authorTitle || 'Estudante',
+      authorTitle: (q as any).authorTitle || 'Calouro',
       createdAt: q.createdAt || '',
       likes: q.likes || [],
       quiz: q
+    })),
+    ...flashcardDecks.map(f => ({
+      id: f.id,
+      itemType: 'flashcard' as const,
+      title: f.title,
+      category: f.tags[0] || 'Geral',
+      subtags: f.tags.slice(1),
+      authorName: f.authorName,
+      authorPhoto: f.authorPhoto,
+      authorTitle: f.authorTitle || 'Calouro',
+      createdAt: f.createdAt,
+      likes: f.likes || [],
+      flashcardDeck: f
     }))
   ];
 
   // Dynamic subtags for filter
-  const allSubtags = Array.from(new Set(
-    quizzes.flatMap(q => q.subtags || ((q as any).subtag ? [(q as any).subtag] : []))
-  )).filter((t): t is string => typeof t === 'string' && t.trim() !== '');
+  const allSubtags = Array.from(new Set([
+    ...quizzes.flatMap(q => q.subtags || ((q as any).subtag ? [(q as any).subtag] : [])),
+    ...flashcardDecks.flatMap(f => f.tags)
+  ])).filter((t): t is string => typeof t === 'string' && t.trim() !== '');
 
   // Filter items
   const filteredItems = combinedItems.filter(item => {
     if (filterType === 'notes' && item.itemType !== 'studyNote') return false;
     if (filterType === 'quizzes' && item.itemType !== 'quiz') return false;
+    if (filterType === 'flashcards' && item.itemType !== 'flashcard') return false;
 
     if (filterMainTag && item.category !== filterMainTag) return false;
-
     if (filterSubtag && !item.subtags.includes(filterSubtag)) return false;
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const matchTitle = item.title.toLowerCase().includes(q);
-      const matchCat = item.category.toLowerCase().includes(q);
+      const matchCategory = item.category.toLowerCase().includes(q);
+      const matchSubtag = item.subtags.some(st => st.toLowerCase().includes(q));
       const matchAuthor = item.authorName.toLowerCase().includes(q);
-      const matchSub = item.subtags.some(s => s.toLowerCase().includes(q));
-      if (!matchTitle && !matchCat && !matchAuthor && !matchSub) return false;
+      if (!matchTitle && !matchCategory && !matchSubtag && !matchAuthor) return false;
     }
 
     return true;
   });
 
-  // Sorting
+  // Sort items
   filteredItems.sort((a, b) => {
     if (sortBy === 'likes') {
-      return (b.likes.length) - (a.likes.length);
+      return (b.likes.length || 0) - (a.likes.length || 0);
     }
     return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
   });
 
-  // Strip html for clean preview
   const getExcerpt = (html?: string) => {
-    if (!html) return 'Sem conteúdo disponível.';
-    const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = html;
-    const text = tempDiv.textContent || tempDiv.innerText || '';
-    return text.trim().slice(0, 150) + (text.length > 150 ? '...' : '');
+    if (!html) return '';
+    const plain = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    return plain.length > 140 ? plain.substring(0, 140) + '...' : plain;
   };
 
   return (
-    <div className="space-y-6 w-full max-w-5xl mx-auto font-sans pb-16">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
       {/* Toast Notification */}
       <AnimatePresence>
         {toastInfo && (
           <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="fixed top-20 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-6 py-3 rounded-full font-bold text-sm shadow-2xl z-[150] flex items-center gap-2.5 max-w-md text-center pointer-events-none"
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-xl border border-slate-700 flex items-center gap-3 text-sm font-medium"
           >
-            <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span>{toastInfo}</span>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Reader Modal for Study Notes (Rendered via createPortal to cover 100% of the screen without bottom gaps) */}
+      {/* Reader Modal */}
       {readingNote && typeof document !== 'undefined' && createPortal(
-        <div 
-          className="fixed inset-0 min-h-screen min-h-[100dvh] w-screen h-screen bg-slate-950/75 backdrop-blur-md z-[9999] flex items-center justify-center p-2 sm:p-4 md:p-6 overflow-hidden animate-in fade-in duration-200"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setReadingNote(null);
-          }}
-        >
-          <div 
-            className="bg-white rounded-3xl shadow-2xl max-w-4xl w-full h-[92vh] max-h-[92vh] flex flex-col border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            
-            {/* Modal Top Header */}
-            <div className="px-5 sm:px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 bg-slate-50/90 shrink-0">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 shadow-2xs">
-                  <FileText className="w-5 h-5" />
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-4xl max-h-[92vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-200">
+            {/* Header */}
+            <div className="p-4 sm:p-6 border-b border-slate-100 flex items-center justify-between gap-4 bg-slate-50/50">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-2.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black uppercase tracking-wider">
+                    Caderno de Estudo
+                  </span>
+                  <span className="text-xs font-bold text-slate-500 flex items-center gap-1">
+                    <Tag className="w-3 h-3" /> {readingNote.folder || 'Geral'}
+                  </span>
                 </div>
-                <div className="truncate">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-black uppercase tracking-wider">
-                      Caderno de Estudo
-                    </span>
-                    <span className="text-xs font-bold text-slate-500 truncate">{readingNote.folder}</span>
-                  </div>
-                  <h2 className="text-base sm:text-lg font-bold text-slate-900 truncate mt-0.5">{readingNote.title}</h2>
+                <h2 className="text-lg sm:text-xl font-black text-slate-900 truncate">
+                  {readingNote.title}
+                </h2>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-xs text-slate-500 font-medium">Por {readingNote.authorName || 'Estudante'}</span>
+                  {readingNote.authorTitle && <UserTitleBadge title={readingNote.authorTitle} />}
                 </div>
               </div>
-
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2">
                 <button
                   onClick={() => handleSaveStudyNoteToMyNotes(readingNote)}
-                  className={cn(
-                    "font-bold px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm transition flex items-center gap-1.5 shadow-sm",
-                    readingNote.id && savedIds.has(readingNote.id)
-                      ? "bg-emerald-700 text-white"
-                      : "bg-emerald-600 hover:bg-emerald-700 text-white"
-                  )}
-                  title="Salva uma cópia independente nos seus cadernos"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
                 >
-                  {readingNote.id && savedIds.has(readingNote.id) ? (
-                    <><Check className="w-4 h-4" /> <span className="hidden sm:inline">Salvo</span></>
-                  ) : (
-                    <><Bookmark className="w-4 h-4" /> <span className="hidden sm:inline">Salvar Cópia</span></>
-                  )}
+                  <Bookmark className="w-3.5 h-3.5" />
+                  <span>Salvar Cópia</span>
                 </button>
-
-                <button
-                  onClick={() => handleExportStudyNote(readingNote)}
-                  className="p-2 text-slate-600 hover:text-emerald-700 hover:bg-slate-200 rounded-xl transition border border-slate-200"
-                  title="Baixar HTML"
-                >
-                  <Download className="w-4 h-4" />
-                </button>
-
                 <button
                   onClick={() => setReadingNote(null)}
-                  className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-xl transition"
-                  title="Fechar (Esc)"
+                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            {/* Modal Author Info Strip */}
-            <div className="px-5 sm:px-6 py-3 bg-white border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-7 h-7 rounded-full bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
-                  {readingNote.authorPhoto ? (
-                    <img src={readingNote.authorPhoto} alt={readingNote.authorName || 'Autor'} className="w-full h-full object-cover" />
-                  ) : (
-                    <UserIcon className="w-3.5 h-3.5 text-slate-400" />
-                  )}
+            {/* Content & TOC */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-8 grid grid-cols-1 md:grid-cols-4 gap-6">
+              {readingToc.length > 0 && (
+                <div className="md:col-span-1 border-r border-slate-100 pr-4 space-y-2">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-400">Sumário</h4>
+                  <nav className="space-y-1">
+                    {readingToc.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          const el = document.getElementById(t.id);
+                          if (el) el.scrollIntoView({ behavior: 'smooth' });
+                        }}
+                        className="text-left w-full text-xs text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 p-1.5 rounded-lg font-medium transition truncate block"
+                      >
+                        {t.text}
+                      </button>
+                    ))}
+                  </nav>
                 </div>
-                <span className="font-bold text-slate-800 truncate">{readingNote.authorName || 'Estudante'}</span>
-                <UserTitleBadge title={readingNote.authorTitle || 'Estudante'} />
+              )}
+              <div className={cn("prose prose-slate max-w-none text-slate-800 text-sm leading-relaxed", readingToc.length > 0 ? "md:col-span-3" : "col-span-full")}>
+                <div dangerouslySetInnerHTML={{ __html: readingNote.content || '<p className="text-slate-400">Sem conteúdo.</p>' }} />
               </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
-              <div className="flex items-center gap-3 text-slate-400 font-medium text-[11px]">
-                <span>{readingNote.createdAt ? `Publicado em ${new Date(readingNote.createdAt).toLocaleDateString()}` : ''}</span>
+      {/* Flashcard Deck Preview Modal */}
+      {previewDeck && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-3xl max-h-[90vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden border border-slate-200">
+            {/* Modal Header */}
+            <div className="p-5 sm:p-6 border-b border-slate-100 flex items-center justify-between gap-4 bg-slate-50/50">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-black uppercase tracking-wider">
+                    Baralho de Flashcards
+                  </span>
+                  <span className="text-xs font-bold text-slate-500 flex items-center gap-1">
+                    <Layers className="w-3.5 h-3.5 text-amber-500" /> {previewDeck.cards.length} cards
+                  </span>
+                </div>
+                <h2 className="text-xl font-black text-slate-900 truncate">
+                  {previewDeck.title}
+                </h2>
+                <p className="text-xs text-slate-500 font-medium mt-0.5">Criado por {previewDeck.authorName}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleSaveFlashcardDeck(previewDeck)}
+                  className="bg-amber-600 hover:bg-amber-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                >
+                  <Bookmark className="w-3.5 h-3.5" />
+                  <span>Importar Baralho</span>
+                </button>
+                <button
+                  onClick={() => setPreviewDeck(null)}
+                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
             </div>
 
-            {/* Modal Body & TOC */}
-            <div className="flex-1 overflow-y-auto p-5 sm:p-8 space-y-6">
-              {readingToc.length > 0 && (
-                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 shadow-2xs">
-                  <h3 className="font-bold text-slate-700 uppercase tracking-widest text-xs flex items-center gap-2 mb-3">
-                    <ListOrdered className="w-4 h-4 text-emerald-600" /> Sumário do Caderno
-                  </h3>
-                  <ul className="space-y-2">
-                    {readingToc.map(item => (
-                      <li key={item.id}>
-                        <a
-                          href={`#${item.id}`}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                          }}
-                          className="text-emerald-700 hover:text-emerald-900 font-bold text-sm hover:underline"
-                        >
-                          {item.text}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
+            {/* Cards List in Modal */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
+              {previewDeck.cards.map((c, i) => (
+                <div key={c.id || i} className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                    <span>Card #{i + 1}</span>
+                    {c.subtag && <span className="px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200 text-[10px]">{c.subtag}</span>}
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold text-indigo-600 uppercase">Pergunta / Frente:</span>
+                    <div className="text-sm font-bold text-slate-900" dangerouslySetInnerHTML={{ __html: c.question }} />
+                  </div>
+                  <div className="pt-1 border-t border-slate-200/60">
+                    <span className="text-[10px] font-bold text-emerald-600 uppercase">Resposta / Verso:</span>
+                    <div className="text-xs font-medium text-slate-700" dangerouslySetInnerHTML={{ __html: c.answer }} />
+                  </div>
                 </div>
-              )}
-
-              {/* Formatted Content */}
-              <div 
-                className="study-editor-content prose prose-slate max-w-none text-slate-800 leading-relaxed text-sm sm:text-base"
-                dangerouslySetInnerHTML={{ __html: readingNote.content || '<p>Caderno sem conteúdo.</p>' }}
-              />
+              ))}
             </div>
 
             {/* Modal Footer */}
-            <div className="px-5 sm:px-6 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
-              <p className="text-xs text-slate-500 hidden sm:block">
-                💡 Ao salvar, uma cópia independente é criada nos seus cadernos de estudo.
-              </p>
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-500">{previewDeck.cards.length} flashcards prontos para repetição espaçada</span>
               <button
-                onClick={() => setReadingNote(null)}
-                className="px-5 py-2 font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition text-xs sm:text-sm ml-auto"
+                onClick={() => {
+                  if (onSelectFlashcardDeck) {
+                    onSelectFlashcardDeck(previewDeck.title, previewDeck.cards);
+                    setPreviewDeck(null);
+                  } else {
+                    handleSaveFlashcardDeck(previewDeck);
+                  }
+                }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-sm"
               >
-                Fechar Leitura
+                <Play className="w-3.5 h-3.5 fill-white" />
+                <span>Praticar Este Baralho</span>
               </button>
             </div>
           </div>
@@ -515,36 +687,24 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
         document.body
       )}
 
-      {/* Main Header */}
-      <div>
-        <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">Comunidade</h2>
-        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4 mt-1">
-          Mundo do Conhecimento
-        </h1>
-      </div>
-
-      {/* Main Filter & Controls Section */}
-      <div className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/90 shadow-sm space-y-4">
-        
-        {/* Row 1: Content Type Selector Tabs + Sort Controls */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-          {/* Segmented Type Tabs */}
-          <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-2xl w-full sm:w-auto overflow-x-auto">
+      {/* Filter and Search Bar Card */}
+      <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/90 shadow-sm space-y-4">
+        {/* Top Row: Content Types & Sorting */}
+        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
+          {/* Content Type Filter Pills */}
+          <div className="flex items-center gap-1.5 p-1 bg-slate-100/80 rounded-2xl overflow-x-auto max-w-full">
             <button
               onClick={() => setFilterType('all')}
               className={cn(
-                "px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer",
+                "px-3 py-1.5 rounded-xl text-xs sm:text-sm transition flex items-center gap-2 whitespace-nowrap",
                 filterType === 'all'
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
+                  ? "bg-white text-slate-900 shadow-xs font-bold"
+                  : "text-slate-600 hover:text-slate-900 font-medium"
               )}
             >
-              <Layers className="w-3.5 h-3.5" />
+              <Layers className="w-4 h-4 text-slate-700" />
               <span>Todos</span>
-              <span className={cn(
-                "px-1.5 py-0.2 rounded-full text-[10px]",
-                filterType === 'all' ? "bg-slate-200 text-slate-800 font-bold" : "bg-slate-200/60 text-slate-500"
-              )}>
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-200/80 text-slate-700">
                 {combinedItems.length}
               </span>
             </button>
@@ -552,18 +712,15 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
             <button
               onClick={() => setFilterType('notes')}
               className={cn(
-                "px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer",
+                "px-3 py-1.5 rounded-xl text-xs sm:text-sm transition flex items-center gap-2 whitespace-nowrap",
                 filterType === 'notes'
-                  ? "bg-emerald-600 text-white shadow-sm"
-                  : "text-slate-600 hover:text-emerald-700"
+                  ? "bg-white text-slate-900 shadow-xs font-bold"
+                  : "text-slate-600 hover:text-slate-900 font-medium"
               )}
             >
-              <FileText className="w-3.5 h-3.5" />
+              <FileText className="w-4 h-4 text-emerald-600" />
               <span>Cadernos de Estudo</span>
-              <span className={cn(
-                "px-1.5 py-0.2 rounded-full text-[10px]",
-                filterType === 'notes' ? "bg-emerald-700 text-white font-bold" : "bg-slate-200/60 text-slate-500"
-              )}>
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-200/80 text-slate-700">
                 {studyNotes.length}
               </span>
             </button>
@@ -571,32 +728,48 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
             <button
               onClick={() => setFilterType('quizzes')}
               className={cn(
-                "px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer",
+                "px-3 py-1.5 rounded-xl text-xs sm:text-sm transition flex items-center gap-2 whitespace-nowrap",
                 filterType === 'quizzes'
-                  ? "bg-indigo-600 text-white shadow-sm"
-                  : "text-slate-600 hover:text-indigo-700"
+                  ? "bg-white text-slate-900 shadow-xs font-bold"
+                  : "text-slate-600 hover:text-slate-900 font-medium"
               )}
             >
-              <BookOpen className="w-3.5 h-3.5" />
+              <BookOpen className="w-4 h-4 text-indigo-600" />
               <span>Testes</span>
-              <span className={cn(
-                "px-1.5 py-0.2 rounded-full text-[10px]",
-                filterType === 'quizzes' ? "bg-indigo-700 text-white font-bold" : "bg-slate-200/60 text-slate-500"
-              )}>
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-200/80 text-slate-700">
                 {quizzes.length}
               </span>
             </button>
+
+            {flashcardDecks.length > 0 && (
+              <button
+                onClick={() => setFilterType('flashcards')}
+                className={cn(
+                  "px-3 py-1.5 rounded-xl text-xs sm:text-sm transition flex items-center gap-2 whitespace-nowrap",
+                  filterType === 'flashcards'
+                    ? "bg-white text-slate-900 shadow-xs font-bold"
+                    : "text-slate-600 hover:text-slate-900 font-medium"
+                )}
+              >
+                <Layers className="w-4 h-4 text-amber-600" />
+                <span>Flashcards</span>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-200/80 text-slate-700">
+                  {flashcardDecks.length}
+                </span>
+              </button>
+            )}
           </div>
 
-          {/* Sort Selector Dropdown */}
-          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
-            <span className="text-xs font-bold text-slate-400 flex items-center gap-1">
-              <ArrowUpDown className="w-3.5 h-3.5" /> Ordenar:
+          {/* Sorting Dropdown */}
+          <div className="flex items-center gap-2 text-slate-500 font-medium text-xs sm:text-sm shrink-0 self-end sm:self-auto">
+            <span className="flex items-center gap-1 text-slate-500 font-medium text-xs sm:text-sm">
+              <ArrowUpDown className="w-3.5 h-3.5 text-slate-400" />
+              <span>Ordenar:</span>
             </span>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl py-1.5 px-3 outline-none focus:border-indigo-500 font-bold text-slate-700 text-xs shadow-2xs cursor-pointer transition"
+              className="px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer shadow-2xs"
             >
               <option value="recent">Mais Recentes</option>
               <option value="likes">Mais Curtidos</option>
@@ -604,40 +777,40 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
           </div>
         </div>
 
-        {/* Row 2: Search Input & Category Filters */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5">
-          {/* Search Bar */}
-          <div className="md:col-span-6 relative">
+        {/* Divider */}
+        <div className="border-t border-slate-100" />
+
+        {/* Bottom Row: Search & Category Selects */}
+        <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center">
+          {/* Search Input */}
+          <div className="relative flex-[2] min-w-[240px]">
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input 
-              type="text" 
-              placeholder="Buscar por título, autor, assunto ou tag..." 
+            <input
+              type="text"
+              placeholder="Buscar por título, autor, assunto ou tag..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 pl-10 pr-9 outline-none focus:border-indigo-500 focus:bg-white font-medium text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 transition"
+              className="w-full pl-10 pr-9 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs sm:text-sm font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-2xs"
             />
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-full"
-                title="Limpar busca"
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="w-4 h-4" />
               </button>
             )}
           </div>
 
-          {/* Grande Área Selector */}
-          <div className="md:col-span-3">
-            <select 
+          {/* Grande Área Select */}
+          <div className="flex-1 min-w-[190px]">
+            <select
               value={filterMainTag}
-              onChange={(e) => setFilterMainTag(e.target.value)}
-              className={cn(
-                "w-full border rounded-xl py-2.5 px-3 outline-none focus:border-indigo-500 font-medium text-xs sm:text-sm cursor-pointer transition",
-                filterMainTag 
-                  ? "bg-indigo-50 border-indigo-200 text-indigo-900 font-bold"
-                  : "bg-slate-50 border-slate-200 text-slate-700"
-              )}
+              onChange={(e) => {
+                setFilterMainTag(e.target.value);
+                setFilterSubtag('');
+              }}
+              className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs sm:text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-2xs cursor-pointer"
             >
               <option value="">Todas as Grandes Áreas</option>
               {PREDEFINED_MAIN_TAGS.map(tag => (
@@ -646,95 +819,39 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
             </select>
           </div>
 
-          {/* Subtags / Assunto Selector */}
-          <div className="md:col-span-3">
-            <select 
+          {/* Subtópicos Select */}
+          <div className="flex-1 min-w-[190px]">
+            <select
               value={filterSubtag}
               onChange={(e) => setFilterSubtag(e.target.value)}
-              disabled={allSubtags.length === 0}
-              className={cn(
-                "w-full border rounded-xl py-2.5 px-3 outline-none focus:border-indigo-500 font-medium text-xs sm:text-sm cursor-pointer transition disabled:opacity-50",
-                filterSubtag 
-                  ? "bg-indigo-50 border-indigo-200 text-indigo-900 font-bold"
-                  : "bg-slate-50 border-slate-200 text-slate-700"
-              )}
+              className="w-full px-3.5 py-2.5 bg-white border border-slate-200 rounded-2xl text-xs sm:text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 shadow-2xs cursor-pointer"
             >
-              <option value="">Todos os Assuntos (Subtags)</option>
-              {allSubtags.map(tag => (
-                <option key={tag} value={tag}>{tag}</option>
+              <option value="">Todos os Assuntos (Subtópicos)</option>
+              {allSubtags.map(st => (
+                <option key={st} value={st}>{st}</option>
               ))}
             </select>
           </div>
         </div>
-
-        {/* Row 3: Active Filters Strip & Reset Button (if active) */}
-        {isAnyFilterActive && (
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 text-xs">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="font-bold text-slate-400">Filtros ativos:</span>
-
-              {filterType !== 'all' && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-200 text-slate-800 font-bold">
-                  {filterType === 'notes' ? 'Cadernos de Estudo' : 'Testes'}
-                  <button onClick={() => setFilterType('all')} className="hover:text-slate-950"><X className="w-3 h-3" /></button>
-                </span>
-              )}
-
-              {filterMainTag && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-800 font-bold">
-                  Área: {filterMainTag}
-                  <button onClick={() => setFilterMainTag('')} className="hover:text-indigo-950"><X className="w-3 h-3" /></button>
-                </span>
-              )}
-
-              {filterSubtag && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-indigo-100 text-indigo-800 font-bold">
-                  Assunto: {filterSubtag}
-                  <button onClick={() => setFilterSubtag('')} className="hover:text-indigo-950"><X className="w-3 h-3" /></button>
-                </span>
-              )}
-
-              {searchQuery && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-200 text-slate-800 font-bold">
-                  "{searchQuery}"
-                  <button onClick={() => setSearchQuery('')} className="hover:text-slate-950"><X className="w-3 h-3" /></button>
-                </span>
-              )}
-
-              <span className="text-slate-400 font-medium ml-1">
-                ({filteredItems.length} resultado{filteredItems.length !== 1 ? 's' : ''})
-              </span>
-            </div>
-
-            <button
-              onClick={clearAllFilters}
-              className="font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-2.5 py-1 rounded-lg transition flex items-center gap-1"
-            >
-              <RotateCcw className="w-3 h-3" /> Limpar Filtros
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* Content Grid */}
+      {/* Main Content Grid */}
       {loading ? (
-        <div className="text-center text-slate-500 font-medium py-16 bg-white rounded-3xl border border-slate-200 p-8">
-          <Globe className="w-8 h-8 text-indigo-500 animate-spin mx-auto mb-3" />
-          <p className="font-bold text-slate-700">Carregando cadernos da comunidade...</p>
+        <div className="text-center py-16 space-y-3">
+          <div className="w-8 h-8 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-xs font-bold text-slate-400">Carregando feed da comunidade...</p>
         </div>
       ) : filteredItems.length === 0 ? (
         <div className="text-center py-16 bg-white rounded-3xl border border-slate-200 p-8 space-y-3">
-          <div className="w-14 h-14 rounded-3xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
-            <Globe className="w-7 h-7" />
-          </div>
-          <h3 className="text-lg font-bold text-slate-800">Nenhum caderno encontrado</h3>
-          <p className="text-slate-500 font-medium text-xs sm:text-sm max-w-md mx-auto">
-            Não encontramos nenhum material com os filtros selecionados. Tente ajustar os termos ou redefinir os filtros.
+          <Globe className="w-10 h-10 text-slate-300 mx-auto" />
+          <h3 className="text-base font-bold text-slate-800">Nenhum caderno encontrado</h3>
+          <p className="text-xs text-slate-500 max-w-sm mx-auto">
+            Não encontramos nenhum conteúdo público com os filtros selecionados. Tente buscar por outros termos ou categorias.
           </p>
           {isAnyFilterActive && (
             <button
               onClick={clearAllFilters}
-              className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 transition shadow-sm"
+              className="px-4 py-2 bg-indigo-50 text-indigo-700 font-bold text-xs rounded-xl hover:bg-indigo-100 transition inline-flex items-center gap-1.5 mt-2"
             >
               <RotateCcw className="w-3.5 h-3.5" /> Redefinir Filtros
             </button>
@@ -744,6 +861,8 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-5">
           {filteredItems.map((item) => {
             const isNote = item.itemType === 'studyNote';
+            const isQuiz = item.itemType === 'quiz';
+            const isDeck = item.itemType === 'flashcard';
             const likesArr = item.likes;
             const isLiked = auth.currentUser ? likesArr.includes(auth.currentUser.uid) : false;
             const isSaved = savedIds.has(item.id);
@@ -753,21 +872,30 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
                 key={`${item.itemType}-${item.id}`} 
                 className={cn(
                   "bg-white p-5 sm:p-6 rounded-3xl border transition-all flex flex-col h-full shadow-sm hover:shadow-md",
-                  isNote ? "hover:border-emerald-300 border-slate-200" : "hover:border-indigo-300 border-slate-200"
+                  isNote ? "hover:border-emerald-300 border-slate-200" :
+                  isQuiz ? "hover:border-indigo-300 border-slate-200" :
+                  "hover:border-amber-300 border-slate-200"
                 )}
               >
                 {/* Header Tag Bar */}
                 <div className="flex flex-wrap items-center gap-1.5 mb-2.5">
                   {/* Type Badge */}
-                  {isNote ? (
+                  {isNote && (
                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-[10px] font-black uppercase tracking-wider">
                       <FileText className="w-3 h-3 text-emerald-600" />
-                      Estudo
+                      Resumo
                     </span>
-                  ) : (
+                  )}
+                  {isQuiz && (
                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/80 text-[10px] font-black uppercase tracking-wider">
                       <CheckCircle2 className="w-3 h-3 text-indigo-600" />
                       Teste
+                    </span>
+                  )}
+                  {isDeck && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200/80 text-[10px] font-black uppercase tracking-wider">
+                      <Layers className="w-3 h-3 text-amber-600" />
+                      Flashcards
                     </span>
                   )}
 
@@ -796,16 +924,23 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
                 </h3>
 
                 {/* Excerpt or Info */}
-                {isNote && item.studyNote ? (
+                {isNote && item.studyNote && (
                   <p className="text-slate-500 font-normal text-xs leading-relaxed mb-4 line-clamp-2">
                     {getExcerpt(item.studyNote.content)}
                   </p>
-                ) : item.quiz ? (
+                )}
+                {isQuiz && item.quiz && (
                   <p className="text-slate-500 font-medium text-xs mb-4 flex items-center gap-1.5">
                     <BookOpen className="w-3.5 h-3.5 text-indigo-500 shrink-0" /> 
                     <span>{item.quiz.questions.length} questões com gabarito e comentários</span>
                   </p>
-                ) : null}
+                )}
+                {isDeck && item.flashcardDeck && (
+                  <p className="text-slate-500 font-medium text-xs mb-4 flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                    <span>{item.flashcardDeck.cards.length} cards para memorização ativa</span>
+                  </p>
+                )}
 
                 {/* Author Info Strip */}
                 <div className="flex items-center justify-between gap-2 p-2.5 rounded-2xl bg-slate-50 border border-slate-100 mb-4 mt-auto">
@@ -821,7 +956,7 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
                       <p className="text-xs font-bold text-slate-800 truncate leading-tight">{item.authorName}</p>
                     </div>
                   </div>
-                  <UserTitleBadge title={item.authorTitle || 'Estudante'} />
+                  <UserTitleBadge title={item.authorTitle || 'Calouro'} />
                 </div>
 
                 {/* Card Action Buttons Bar */}
@@ -843,7 +978,7 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
 
                   {/* Right Actions */}
                   <div className="flex items-center gap-1.5 justify-end">
-                    {isNote && item.studyNote ? (
+                    {isNote && item.studyNote && (
                       <>
                         <button
                           onClick={() => handleOpenReader(item.studyNote!)}
@@ -876,7 +1011,9 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
                           <Download className="w-3.5 h-3.5" />
                         </button>
                       </>
-                    ) : item.quiz ? (
+                    )}
+
+                    {isQuiz && item.quiz && (
                       <>
                         {onSelectQuiz && (
                           <button
@@ -909,7 +1046,34 @@ export function CommunityView({ onSelectQuiz }: CommunityViewProps) {
                           <Download className="w-3.5 h-3.5" />
                         </button>
                       </>
-                    ) : null}
+                    )}
+
+                    {isDeck && item.flashcardDeck && (
+                      <>
+                        <button
+                          onClick={() => setPreviewDeck(item.flashcardDeck!)}
+                          className="bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1 transition"
+                          title="Visualizar flashcards do baralho"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Ver Cards</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleSaveFlashcardDeck(item.flashcardDeck!)}
+                          className={cn(
+                            "font-bold px-3 py-1.5 rounded-xl text-xs transition flex items-center gap-1 shadow-2xs",
+                            isSaved
+                              ? "bg-amber-700 text-white"
+                              : "bg-amber-600 hover:bg-amber-700 text-white"
+                          )}
+                          title="Importar para meus flashcards"
+                        >
+                          {isSaved ? <Check className="w-3.5 h-3.5" /> : <Bookmark className="w-3.5 h-3.5" />}
+                          <span>{isSaved ? 'Salvo' : 'Importar'}</span>
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

@@ -1,4 +1,5 @@
 import { TitleDefinition } from '../types';
+import { supabase } from './supabase';
 
 export const DEFAULT_TITLES: TitleDefinition[] = [
   { id: 't1', name: 'Calouro', requirement: 0, criteria: 'total_questions', icon: 'User', color: 'bg-slate-50|text-slate-600|border-slate-200' },
@@ -75,6 +76,31 @@ export function setCachedBankTags(tags: BankTagItem[]): void {
   } catch (e) {
     console.warn('Error writing bank tags to localStorage:', e);
   }
+}
+
+/**
+ * Busca as bank_tags diretamente do Supabase e atualiza o cache local.
+ */
+export async function fetchBankTagsFromSupabase(): Promise<BankTagItem[]> {
+  try {
+    const { data, error } = await supabase
+      .from('bank_tags')
+      .select('*')
+      .order('name', { ascending: true });
+
+    if (!error && data && data.length > 0) {
+      const list: BankTagItem[] = data.map((doc: any) => ({
+        id: doc.id,
+        name: doc.name,
+        subtags: Array.isArray(doc.subtags) ? doc.subtags : []
+      }));
+      setCachedBankTags(list);
+      return list;
+    }
+  } catch (err) {
+    console.warn("Error fetching bank_tags from Supabase:", err);
+  }
+  return getCachedBankTags();
 }
 
 // ==================== TITLES ====================

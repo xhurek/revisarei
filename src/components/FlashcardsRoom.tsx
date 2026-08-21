@@ -1,15 +1,24 @@
+import { supabase, toValidUUID } from '../lib/supabase';
 import { apiFetch, parseJsonResponse } from "../lib/firebase";
 import React, { useState, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
-import { collection, query, where, getDocs, updateDoc, doc, increment, getDoc, setDoc, addDoc, writeBatch, deleteDoc } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType, storage } from '../lib/firebase';
+import { auth, storage } from '../lib/firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { Flashcard } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Brain, Trophy, Check, X, ShieldAlert, Book, Tag as TagIcon, Play, Upload, Edit3, Trash2, Plus, Layout } from 'lucide-react';
+import { Brain, Trophy, Check, X, ShieldAlert, Book, Tag as TagIcon, Play, Upload, Edit3, Trash2, Plus, Layout, Globe } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { FlashcardCreator } from './FlashcardCreator';
 import { showToast } from '../lib/toast';
+import {
+  fetchUserFlashcardsFromSupabase,
+  updateFlashcardGradeInSupabase,
+  updateFlashcardContentInSupabase,
+  deleteFlashcardFromSupabase,
+  deleteDeckFromSupabase,
+  updateDeckInSupabase,
+  importFlashcardsBatchToSupabase
+} from '../lib/supabaseFlashcards';
 
 // Cache for loaded media files to avoid duplicate Firestore queries
 const mediaCache: Record<string, string> = {};
@@ -102,49 +111,19 @@ function FlashcardHtml({ html, isAnswer }: FlashcardHtmlProps) {
             replacement = `<img src="${mediaCache[sanitizedId]}" alt="${decodedSrc}" class="max-w-full h-auto rounded-xl mx-auto my-4 shadow-md border border-slate-100 dark:border-slate-800" />`;
           } else {
             try {
-              const docRef = doc(db, 'users', auth.currentUser.uid, 'ankiMedia', sanitizedId);
-              const docSnap = await getDoc(docRef);
-              
-              if (docSnap.exists()) {
-                const data = docSnap.data();
-                if (data && data.url) {
-                  mediaCache[sanitizedId] = data.url;
-                  replacement = `<img src="${data.url}" alt="${decodedSrc}" class="max-w-full h-auto rounded-xl mx-auto my-4 shadow-md border border-slate-100 dark:border-slate-800" />`;
-                } else if (data && data.data) {
-                  const dataUrl = `data:${data.mime || 'image/png'};base64,${data.data}`;
-                  mediaCache[sanitizedId] = dataUrl;
-                  replacement = `<img src="${dataUrl}" alt="${decodedSrc}" class="max-w-full h-auto rounded-xl mx-auto my-4 shadow-md border border-slate-100 dark:border-slate-800" />`;
-                } else {
-                  replacement = `
-                    <div class="my-4 p-4 rounded-xl border border-dashed border-red-300 bg-red-50/80 text-red-700 flex flex-col items-center gap-2 text-center max-w-md mx-auto shadow-sm">
-                      <div class="flex items-center gap-1.5 font-semibold text-sm">
-                        <span class="text-base">⚠️</span> Registro de mídia corrompido
-                      </div>
-                      <div class="text-[10px] text-red-500 font-mono break-all px-2">
-                        ID: "${sanitizedId}"
-                      </div>
-                    </div>
-                  `;
-                }
-              } else {
-                const unsanitizedId = decodedSrc.replace(/[^a-zA-Z0-9_.-]/g, '_');
-                let unsanitizedSnap = null;
-                if (unsanitizedId !== sanitizedId) {
-                  const unsanitizedRef = doc(db, 'users', auth.currentUser.uid, 'ankiMedia', unsanitizedId);
-                  unsanitizedSnap = await getDoc(unsanitizedRef);
-                }
-                
-                if (unsanitizedSnap && unsanitizedSnap.exists()) {
-                  const data = unsanitizedSnap.data();
-                  if (data && data.url) {
-                    mediaCache[sanitizedId] = data.url;
-                    replacement = `<img src="${data.url}" alt="${decodedSrc}" class="max-w-full h-auto rounded-xl mx-auto my-4 shadow-md border border-slate-100 dark:border-slate-800" />`;
-                  } else if (data && data.data) {
-                    const dataUrl = `data:${data.mime || 'image/png'};base64,${data.data}`;
-                    mediaCache[sanitizedId] = dataUrl;
-                    replacement = `<img src="${dataUrl}" alt="${decodedSrc}" class="max-w-full h-auto rounded-xl mx-auto my-4 shadow-md border border-slate-100 dark:border-slate-800" />`;
-                  }
-                } else {
+              const storageRef = ref(storage, `users/${auth.currentUser.uid}/ankiMedia/${sanitizedId}`);
+              const url = await getDownloadURL(storageRef);
+              mediaCache[sanitizedId] = url;
+              replacement = `<img src="${url}" alt="${decodedSrc}" class="max-w-full h-auto rounded-xl mx-auto my-4 shadow-md border border-slate-100 dark:border-slate-800" />`;
+            } catch (err1: any) {
+              const unsanitizedId = decodedSrc.replace(/[^a-zA-Z0-9_.-]/g, '_');
+              if (unsanitizedId !== sanitizedId) {
+                try {
+                  const storageRef2 = ref(storage, `users/${auth.currentUser.uid}/ankiMedia/${unsanitizedId}`);
+                  const url2 = await getDownloadURL(storageRef2);
+                  mediaCache[sanitizedId] = url2;
+                  replacement = `<img src="${url2}" alt="${decodedSrc}" class="max-w-full h-auto rounded-xl mx-auto my-4 shadow-md border border-slate-100 dark:border-slate-800" />`;
+                } catch (err2: any) {
                   replacement = `
                     <div class="my-4 p-4 rounded-xl border border-dashed border-red-200 bg-red-50/60 dark:bg-red-950/20 text-red-700 dark:text-red-400 flex flex-col items-center gap-2 text-center max-w-md mx-auto shadow-sm">
                       <div class="flex items-center gap-1.5 font-semibold text-sm">
@@ -156,18 +135,18 @@ function FlashcardHtml({ html, isAnswer }: FlashcardHtmlProps) {
                     </div>
                   `;
                 }
+              } else {
+                replacement = `
+                  <div class="my-4 p-4 rounded-xl border border-dashed border-red-200 bg-red-50/60 dark:bg-red-950/20 text-red-700 dark:text-red-400 flex flex-col items-center gap-2 text-center max-w-md mx-auto shadow-sm">
+                    <div class="flex items-center gap-1.5 font-semibold text-sm">
+                      <span class="text-base">⚠️</span> Imagem não encontrada
+                    </div>
+                    <div class="text-[11px] font-mono break-all bg-red-100/50 dark:bg-red-900/30 px-2 py-1 rounded">
+                      "${decodedSrc}"
+                    </div>
+                  </div>
+                `;
               }
-            } catch (err: any) {
-              replacement = `
-                <div class="my-4 p-4 rounded-xl border border-dashed border-amber-300 bg-amber-50/80 text-amber-700 flex flex-col items-center gap-2 text-center max-w-md mx-auto shadow-sm">
-                  <div class="flex items-center gap-1.5 font-semibold text-sm">
-                    <span class="text-base">⚠️</span> Erro ao carregar do Firestore
-                  </div>
-                  <div class="text-[10px] text-amber-600 font-mono break-all">
-                    ${err.message || err}
-                  </div>
-                </div>
-              `;
             }
           }
           
@@ -231,7 +210,8 @@ export function FlashcardsRoom() {
     oldTag: string;
     newTag: string;
     subtags: string;
-  }>({ isOpen: false, oldTag: '', newTag: '', subtags: '' });
+    isPublic: boolean;
+  }>({ isOpen: false, oldTag: '', newTag: '', subtags: '', isPublic: false });
 
   const [editingFlashcard, setEditingFlashcard] = useState<Flashcard | null>(null);
   const [cardEditModal, setCardEditModal] = useState<{
@@ -275,13 +255,18 @@ export function FlashcardsRoom() {
       if (memoryCachedFlashcards[uid] && !forceRefresh) {
         fetchedCards = memoryCachedFlashcards[uid];
       } else {
-        const q = query(
-          collection(db, 'users', uid, 'flashcards')
-        );
+        // Try fetching from Supabase first
+        try {
+          const supaCards = await fetchUserFlashcardsFromSupabase(uid);
+          if (supaCards && supaCards.length > 0) {
+            fetchedCards = supaCards;
+          }
+        } catch (supaErr) {
+          console.warn("Supabase fetch flashcards error:", supaErr);
+        }
+
         
-        const snapshot = await getDocs(q);
-        fetchedCards = snapshot.docs.map(d => ({ ...d.data(), id: d.id } as Flashcard));
-        fetchedCards.sort((a, b) => new Date(a.nextReview).getTime() - new Date(b.nextReview).getTime());
+
         memoryCachedFlashcards[uid] = fetchedCards;
       }
       
@@ -296,7 +281,7 @@ export function FlashcardsRoom() {
         });
       }
     } catch (error) {
-      handleFirestoreError(error, OperationType.GET, 'flashcards');
+      console.error("Error fetching flashcards:", error);
     } finally {
       if (!background) setLoading(false);
     }
@@ -364,28 +349,15 @@ export function FlashcardsRoom() {
     const uid = auth.currentUser.uid;
     const cardId = card.id;
 
-    updateDoc(doc(db, 'users', uid, 'flashcards', cardId), {
-      interval: newInterval,
-      easeFactor: newEase,
-      nextReview: nextReviewDate.toISOString()
-    }).catch(error => {
-      console.error("Error updating flashcard:", error);
+    // 1. Update in Supabase
+    updateFlashcardGradeInSupabase(uid, cardId, newInterval, newEase, nextReviewDate.toISOString()).catch(e => {
+      console.warn("Supabase update grade error:", e);
     });
 
-    const statsRef = doc(db, 'users', uid, 'stats', 'main');
-    getDoc(statsRef).then(docSnap => {
-      if (docSnap.exists()) {
-        updateDoc(statsRef, { flashcardsReviewed: increment(1) });
-      } else {
-        setDoc(statsRef, {
-          questionsAnswered: 0,
-          questionsCorrect: 0,
-          flashcardsReviewed: 1
-        });
-      }
-    }).catch(err => {
-      console.error("Error updating stats", err);
-    });
+    
+
+    // 2. Update stats in Supabase
+    supabase.rpc('increment_flashcards_reviewed', { user_id: uid }).then(({ error }) => { if (error) console.warn("Supabase stats update error:", error); });
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -484,14 +456,6 @@ export function FlashcardsRoom() {
             mediaUrls[lowerFilename] = downloadUrl;
             mediaUrls[sanitizedId] = downloadUrl;
             mediaSuccessCount++;
-            
-            // Salvar uma referência simples (sem o base64 pesado) no Firestore para retrocompatibilidade
-            await setDoc(doc(db, 'users', auth.currentUser!.uid, 'ankiMedia', sanitizedId), {
-              url: downloadUrl,
-              mime: mediaObj.mime,
-              userId: auth.currentUser!.uid,
-              isReferencedInStorage: true
-            });
           } catch (err) {
             console.error("Erro ao fazer upload de mídia para o Firebase Storage:", filename, err);
             mediaFailCount++;
@@ -500,12 +464,12 @@ export function FlashcardsRoom() {
         await Promise.all(mediaPromises);
       }
 
-      // Salvar flashcards no Firestore, já com as tags <img> apontadas para as URLs do Storage
-      const promises = cardsToImport.map((card: any) => {
+      // Salvar flashcards no Supabase e no Firestore, já com as tags <img> apontadas para as URLs do Storage
+      const preparedCards: Flashcard[] = cardsToImport.map((card: any) => {
         const questionWithUrls = replaceImageSources(card.question, mediaUrls);
         const answerWithUrls = replaceImageSources(card.answer, mediaUrls);
-        
-        return addDoc(collection(db, 'users', auth.currentUser!.uid, 'flashcards'), {
+        return {
+          id: `fc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
           question: questionWithUrls,
           answer: answerWithUrls,
           explanation: card.explanation || '',
@@ -514,14 +478,20 @@ export function FlashcardsRoom() {
           easeFactor: 2.5,
           userId: auth.currentUser!.uid,
           createdAt: new Date().toISOString(),
-          tag: finalDeckName
-        }).catch(err => {
-           handleFirestoreError(err, OperationType.CREATE, 'flashcards');
-           throw err;
-         });
+          tag: finalDeckName,
+          subtag: '',
+          subtags: []
+        };
       });
 
-      await Promise.all(promises);
+      // 1. Supabase Batch Import
+      try {
+        await importFlashcardsBatchToSupabase(auth.currentUser!.uid, preparedCards);
+      } catch (supaErr) {
+        console.warn("Supabase import error:", supaErr);
+      }
+
+      
       
       let importMsg = `${cardsToImport.length} flashcards adicionados com sucesso.`;
       if (mediaEntries.length > 0) {
@@ -593,7 +563,7 @@ export function FlashcardsRoom() {
     return false; // Nunca mostra "Novo" se já foi aberto, conforme requisitado
   };
 
-  const handleEditDeckInit = (e: React.MouseEvent, oldTag: string) => {
+  const handleEditDeckInit = async (e: React.MouseEvent, oldTag: string) => {
     e.stopPropagation();
     const cards = allCards.filter(c => (c.tag || 'Sem tag') === oldTag);
     const existingSubtagsSet = new Set<string>();
@@ -601,45 +571,62 @@ export function FlashcardsRoom() {
       if (c.subtag) existingSubtagsSet.add(c.subtag);
       if (c.subtags && Array.isArray(c.subtags)) c.subtags.forEach(st => existingSubtagsSet.add(st));
     });
+
+    let isPublic = false;
+    if (auth.currentUser) {
+      try {
+        const { data: deckRow } = await supabase
+          .from('flashcards')
+          .select('is_public')
+          .eq('user_id', auth.currentUser.uid)
+          .eq('title', oldTag)
+          .limit(1);
+        if (deckRow && deckRow.length > 0 && deckRow[0].is_public) {
+          isPublic = true;
+        }
+      } catch (err) {
+        console.warn("Could not check deck is_public:", err);
+      }
+    }
+
     setDeckEditModal({
       isOpen: true,
       oldTag,
       newTag: oldTag,
-      subtags: Array.from(existingSubtagsSet).join(', ')
+      subtags: Array.from(existingSubtagsSet).join(', '),
+      isPublic
     });
   };
 
   const processEditDeck = async () => {
-    const { oldTag, newTag, subtags } = deckEditModal;
+    const { oldTag, newTag, subtags, isPublic } = deckEditModal;
     if (!newTag || newTag.trim() === '' || !auth.currentUser) return;
 
     setLoading(true);
     try {
-      const cardsToUpdate = allCards.filter(c => (c.tag || 'Sem tag') === oldTag);
       const cleanNewTag = newTag.trim();
       const cleanSubtag = subtags.trim();
       const subtagsList = cleanSubtag ? cleanSubtag.split(',').map(s => s.trim()).filter(Boolean) : [];
 
-      let batch = writeBatch(db);
-      let count = 0;
-      for (const card of cardsToUpdate) {
-        if (count > 0 && count % 500 === 0) {
-          await batch.commit();
-          batch = writeBatch(db);
-        }
-        const docRef = doc(db, 'users', auth.currentUser.uid, 'flashcards', card.id!);
-        batch.update(docRef, {
-          tag: cleanNewTag,
-          subtag: cleanSubtag,
-          subtags: subtagsList
-        });
-        count++;
-      }
-      if (count > 0 && count % 500 !== 0) {
-        await batch.commit();
+      // 1. Supabase update with public status and author info
+      try {
+        await updateDeckInSupabase(
+          auth.currentUser.uid,
+          oldTag,
+          cleanNewTag,
+          subtagsList,
+          isPublic,
+          {
+            name: auth.currentUser.displayName || 'Estudante',
+            photo: auth.currentUser.photoURL || '',
+            title: 'Estudante de Medicina'
+          }
+        );
+      } catch (sErr) {
+        console.warn("Supabase update deck error:", sErr);
       }
 
-      setDeckEditModal({ isOpen: false, oldTag: '', newTag: '', subtags: '' });
+      setDeckEditModal({ isOpen: false, oldTag: '', newTag: '', subtags: '', isPublic: false });
       fetchCards(true, true);
     } catch (err) {
       console.error(err);
@@ -681,15 +668,21 @@ export function FlashcardsRoom() {
       const cleanSubtag = subtag.trim();
       const subtagsList = cleanSubtag ? cleanSubtag.split(',').map(s => s.trim()).filter(Boolean) : [];
 
-      const docRef = doc(db, 'users', auth.currentUser.uid, 'flashcards', card.id);
-      await updateDoc(docRef, {
-        question: question.trim(),
-        answer: answer.trim(),
-        explanation: explanation.trim(),
-        tag: tag.trim(),
-        subtag: cleanSubtag,
-        subtags: subtagsList
-      });
+      // 1. Supabase update
+      try {
+        await updateFlashcardContentInSupabase(auth.currentUser.uid, card.id, {
+          question: question.trim(),
+          answer: answer.trim(),
+          explanation: explanation.trim(),
+          tag: tag.trim(),
+          subtag: cleanSubtag,
+          subtags: subtagsList
+        });
+      } catch (sErr) {
+        console.warn("Supabase update card error:", sErr);
+      }
+
+      
 
       setCardEditModal({ isOpen: false, card: null, question: '', answer: '', explanation: '', tag: '', subtag: '' });
       fetchCards(true, true);
@@ -722,22 +715,14 @@ export function FlashcardsRoom() {
     
     setLoading(true);
     try {
-      const cardsToDelete = allCards.filter(c => (c.tag || 'Sem tag') === tag);
+      // 1. Supabase delete
+      try {
+        await deleteDeckFromSupabase(auth.currentUser.uid, tag);
+      } catch (sErr) {
+        console.warn("Supabase delete deck error:", sErr);
+      }
+
       
-      let batch = writeBatch(db);
-      let count = 0;
-      for (const card of cardsToDelete) {
-        if (count > 0 && count % 500 === 0) {
-          await batch.commit();
-          batch = writeBatch(db);
-        }
-        const docRef = doc(db, 'users', auth.currentUser.uid, 'flashcards', card.id!);
-        batch.delete(docRef);
-        count++;
-      }
-      if (count > 0 && count % 500 !== 0) {
-        await batch.commit();
-      }
       
       fetchCards();
     } catch (err) {
@@ -768,7 +753,14 @@ export function FlashcardsRoom() {
     if (!auth.currentUser) return;
     setLoading(true);
     try {
-      await deleteDoc(doc(db, 'users', auth.currentUser.uid, 'flashcards', cardId));
+      // 1. Supabase delete
+      try {
+        await deleteFlashcardFromSupabase(auth.currentUser.uid, cardId);
+      } catch (sErr) {
+        console.warn("Supabase delete card error:", sErr);
+      }
+
+      
       
       // Remove from allCards local state
       const updatedCards = allCards.filter(c => c.id !== cardId);
@@ -908,6 +900,24 @@ export function FlashcardsRoom() {
                     onChange={(e) => setDeckEditModal({ ...deckEditModal, subtags: e.target.value })}
                     placeholder="Ex: Cardiologia, ECG, Valvopatias"
                   />
+                </div>
+
+                <div className="pt-1">
+                  <label className="flex items-center gap-2.5 p-3 rounded-xl bg-indigo-50/50 border border-indigo-100 cursor-pointer hover:bg-indigo-50 transition">
+                    <input
+                      type="checkbox"
+                      checked={deckEditModal.isPublic}
+                      onChange={(e) => setDeckEditModal({ ...deckEditModal, isPublic: e.target.checked })}
+                      className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                    />
+                    <div>
+                      <p className="text-xs font-bold text-indigo-950 flex items-center gap-1.5">
+                        <Globe className="w-3.5 h-3.5 text-indigo-600" />
+                        Compartilhar publicamente na Comunidade
+                      </p>
+                      <p className="text-[10px] text-indigo-700">Outros estudantes poderão estudar e salvar uma cópia deste caderno</p>
+                    </div>
+                  </label>
                 </div>
               </div>
 

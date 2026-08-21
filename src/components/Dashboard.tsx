@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Target, CheckCircle2, RefreshCw, Trophy, Brain, Lightbulb, AlertCircle, Sparkles, User, GraduationCap, Edit2, X, Flame, Calendar, Zap, Star, Award } from 'lucide-react';
-import { auth, db } from '../lib/firebase';
+import { auth } from '../lib/firebase';
 import { updateProfile } from 'firebase/auth';
-import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { UserProfile, TitleDefinition, TitleCriteria } from '../types';
 import { getMainArea, DEFAULT_MAIN_AREAS } from '../lib/categories';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip } from 'recharts';
 import { PlannerWidget } from './PlannerWidget';
 import { cn } from '../lib/utils';
+import { syncUserProfileToSupabase, getUserStatsFromSupabase } from '../lib/supabaseUser';
 
 const ICON_MAP: Record<string, React.ReactNode> = {
   Target: <Target className="w-5 h-5" />,
@@ -52,79 +53,70 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
   const [selectedTitle, setSelectedTitle] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
 
+  const fetchStats = async () => {
+    if (!auth.currentUser) return;
+    setLoading(true);
+    try {
+      const statusData = await getUserStatsFromSupabase(auth.currentUser.uid);
+      if (statusData) {
+        const catStats = statusData.categoryStats || {};
+        const hasCategoryStats = Object.keys(catStats).length > 0;
+        const totalCorrectFromCategories = Object.values(catStats).reduce((acc: number, curr: any) => acc + (curr.correct || 0), 0) as number;
+
+        setStats({
+          answered: statusData.questionsAnswered || 0,
+          progression: statusData.progressionQuestions || 0,
+          correct: hasCategoryStats ? totalCorrectFromCategories : (isNaN(statusData.questionsCorrect) ? 0 : statusData.questionsCorrect),
+          reviewed: statusData.flashcardsReviewed || 0,
+          weekly: statusData.weeklyQuestionCount || 0,
+          streak: statusData.streak || userData?.streak || 1,
+          dailyGoalsMet: statusData.dailyGoalsMet || 0,
+          weeklyGoalsMet: statusData.weeklyGoalsMet || 0,
+          daily: statusData.lastActivityDate === new Date().toISOString().split('T')[0] ? (statusData.dailyQuestionCount || 0) : 0,
+          responses_total: statusData.responses_total || 0,
+          saves_total: statusData.saves_total || 0,
+          categoryStats: catStats
+        });
+      }
+    } catch (e) {
+      console.warn("Supabase stats error in Dashboard:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!auth.currentUser) {
       setLoading(false);
       return;
     }
-
-    const statsRef = doc(db, 'users', auth.currentUser.uid, 'stats', 'main');
-    const unsubscribe = onSnapshot(statsRef, (statsDoc) => {
-      if (statsDoc.exists()) {
-        const data = statsDoc.data();
-        let localToday = new Date();
-        localToday.setHours(0, 0, 0, 0);
-        const todayStr = new Date(localToday.getTime() - localToday.getTimezoneOffset() * 60000).toISOString().split('T')[0];
-        
-        const currentMonday = new Date(localToday);
-        const day = currentMonday.getDay();
-        const diffToMonday = currentMonday.getDate() - day + (day === 0 ? -6 : 1);
-        currentMonday.setDate(diffToMonday);
-        const currentWeekStr = new Date(currentMonday.getTime() - currentMonday.getTimezoneOffset() * 60000).toISOString().split('T')[0];
-        
-        let weeklyCount = 0;
-        if (data.currentWeek === currentWeekStr) {
-          weeklyCount = data.weeklyQuestionCount || 0;
-        } else if (data.lastActivityDate && data.lastActivityDate >= currentWeekStr) {
-          weeklyCount = data.weeklyQuestionCount || 0;
-        }
-
-        const totalCorrectFromCategories = Object.values(data.categoryStats || {}).reduce((acc: number, curr: any) => acc + (curr.correct || 0), 0) as number;
-
-        const hasCategoryStats = Object.keys(data.categoryStats || {}).length > 0;
-
-        setStats({
-          answered: data.questionsAnswered || 0,
-          progression: data.progressionQuestions || 0,
-          correct: hasCategoryStats ? totalCorrectFromCategories : Math.min(data.questionsAnswered || 0, Math.floor(data.questionsCorrect || 0)),
-          reviewed: data.flashcardsReviewed || 0,
-          weekly: weeklyCount,
-          streak: data.streak || 0,
-          dailyGoalsMet: data.dailyGoalsMet || 0,
-          weeklyGoalsMet: data.weeklyGoalsMet || 0,
-          daily: data.lastActivityDate === todayStr ? (data.dailyQuestionCount || 0) : 0,
-          responses_total: data.responses_total || 0,
-          saves_total: data.saves_total || 0,
-          categoryStats: data.categoryStats || {}
-        });
-      }
-      setLoading(false);
-    }, (err) => {
-      if (err.code === 'permission-denied') {
-        console.warn("Stats subscription closed (permission-denied). Expected during logout.");
-      } else {
-        console.error("Error listening to stats:", err);
-      }
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
+    
+    fetchStats();
   }, []);
 
   const handleSaveProfile = async () => {
     if (!auth.currentUser) return;
     setSavingProfile(true);
     try {
+      const finalName = editName || auth.currentUser.displayName || 'Usuário';
+      const finalPhoto = editPhotoUrl || auth.currentUser.photoURL || undefined;
+
       await updateProfile(auth.currentUser, {
         displayName: editName || auth.currentUser.displayName,
         photoURL: editPhotoUrl || auth.currentUser.photoURL
       });
 
-      const userRef = doc(db, 'users', auth.currentUser.uid);
-      await updateDoc(userRef, {
-        name: editName || auth.currentUser.displayName || 'Usuário',
-        title: selectedTitle
-      });
+      // 1. Supabase User Sync
+      try {
+        await syncUserProfileToSupabase({
+          uid: auth.currentUser.uid,
+          name: finalName,
+          photo: finalPhoto,
+          title: selectedTitle || undefined
+        });
+      } catch (supaErr) {
+        console.warn("Supabase save profile error:", supaErr);
+      }
 
       setIsEditingProfile(false);
     } catch (e) {
@@ -249,9 +241,19 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
 
   return (
     <div className="space-y-6 w-full max-w-7xl mx-auto">
-      <div>
-        <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">DESEMPENHO E ESTATÍSTICAS</h2>
-        <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4 mt-1">Avaliação Geral</h1>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">DESEMPENHO E ESTATÍSTICAS</h2>
+          <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4 mt-1">Avaliação Geral</h1>
+        </div>
+        <button
+          onClick={fetchStats}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-2xs"
+          title="Atualizar Estatísticas"
+        >
+          <RefreshCw className={cn("w-4 h-4 text-indigo-600", loading && "animate-spin")} />
+          <span>Atualizar</span>
+        </button>
       </div>
 
       
@@ -316,8 +318,7 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
         </div>
       </div>
 
-      <div className="flex flex-col gap-6 w-full">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
             { label: 'Questões', val: stats.answered, icon: <Target className="w-5 h-5" />, color: 'text-blue-600', bg: 'bg-blue-50' },
             { label: 'Acertos', val: stats.correct, icon: <CheckCircle2 className="w-5 h-5" />, color: 'text-emerald-600', bg: 'bg-emerald-50' },
@@ -495,7 +496,6 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
           </div>
         )}
       </AnimatePresence>
-      </div>
     </div>
   );
 }

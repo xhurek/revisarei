@@ -6,8 +6,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ChevronRight, ChevronLeft, CheckCircle2, XCircle, ArrowLeft, Trophy, Brain, User as UserIcon, Clock, Eye, EyeOff, Heart, BookOpen } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
-import { collection, query, where, getDocs, addDoc, orderBy, doc, updateDoc, setDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth } from '../lib/firebase';
+import { supabase, toValidUUID } from '../lib/supabase';
 import { UserTitleBadge } from './UserTitleBadge';
 
 function isUserAnswerCorrect(userAns: any, correctAns: any, options?: any[]): boolean {
@@ -280,19 +280,23 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
 
   const handlePause = async () => {
     if (quiz.id) {
+      const progressPayload = {
+        currentIndex,
+        answers,
+        revealed,
+        secondsElapsed,
+        discursiveFeedback
+      };
+
       try {
-        await updateDoc(doc(db, 'quizzes', quiz.id), {
-          progress: {
-            currentIndex,
-            answers,
-            revealed,
-            secondsElapsed,
-            discursiveFeedback
-          }
-        });
-      } catch (err) {
-        console.error(err);
+        await supabase.from('quizzes').update({
+          progress: progressPayload
+        }).eq('id', toValidUUID(quiz.id));
+      } catch (supaErr) {
+        console.warn("Supabase update progress error:", supaErr);
       }
+
+      
     }
     onCancel();
   };
@@ -308,19 +312,31 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
       setComments([]);
       const fetchComments = async () => {
         try {
-          const q = query(
-            collection(db, 'comments'),
-            where('quizId', '==', quiz.id),
-            where('questionId', '==', currentQuestion.id),
-            // ordering by createdAt gives an error if no index, so we do client-side sorting
-          );
-          const snapshot = await getDocs(q);
-          const fetched = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
-          fetched.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-          setComments(fetched);
+          const { data } = await supabase
+            .from('comments')
+            .select('*')
+            .eq('quiz_id', quiz.id)
+            .eq('question_id', currentQuestion.id);
+            
+          if (data) {
+             const fetched = data.map((d: any) => ({
+                id: d.id,
+                quizId: d.quiz_id,
+                questionId: d.question_id,
+                quizTitle: d.quiz_title,
+                text: d.text,
+                userId: d.user_id,
+                userName: d.user_name,
+                userPhoto: d.user_photo,
+                userTitle: d.user_title,
+                likes: d.likes || [],
+                createdAt: d.created_at
+             }));
+             fetched.sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+             setComments(fetched);
+          }
         } catch (err) {
-          handleFirestoreError(err, OperationType.GET, 'comments');
-          console.error(err);
+          console.error("Error fetching comments:", err);
         }
       };
       fetchComments();
@@ -342,30 +358,42 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
         likes: [],
         createdAt: new Date().toISOString()
       };
+      
       try {
-        const docRef = await addDoc(collection(db, 'comments'), commentData);
-        setComments(prev => [...prev, { ...commentData, id: docRef.id }]);
+        const { data: inserted, error } = await supabase.from('comments').insert([{
+           quiz_id: commentData.quizId,
+           question_id: commentData.questionId,
+           quiz_title: commentData.quizTitle,
+           text: commentData.text,
+           user_id: commentData.userId,
+           user_name: commentData.userName,
+           user_photo: commentData.userPhoto,
+           user_title: commentData.userTitle,
+           likes: [],
+           created_at: commentData.createdAt
+        }]).select().single();
+
+        let docId = inserted?.id || `cmt_${Date.now()}`;
+        
+        setComments(prev => [...prev, { ...commentData, id: docId }]);
         setNewComment('');
         
         if (quiz.userId && quiz.userId !== auth.currentUser.uid) {
            try {
-             await addDoc(collection(db, 'notifications'), {
-               userId: quiz.userId,
+             const notifMsg = `${auth.currentUser.displayName || 'Usuário'} comentou: "${newComment.substring(0, 30)}..." na sua questão pública.`;
+             await supabase.from('notifications').insert({
+               user_id: quiz.userId,
+               title: 'Novo comentário',
+               message: notifMsg,
                type: 'comment',
-               quiz: quiz,
-               message: `${auth.currentUser.displayName || 'Usuário'} comentou: "${newComment.substring(0, 30)}..." na sua questão pública.`,
-               time: new Date().toLocaleTimeString(),
-               read: false,
-               createdAt: new Date().toISOString()
+               is_read: false
              });
            } catch (notifErr) {
-             handleFirestoreError(notifErr, OperationType.CREATE, 'notifications');
+             console.warn("Notification error:", notifErr);
            }
         }
       } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, 'comments');
-        console.error(err);
-        alert('Erro ao enviar comentário.');
+        console.error("Error sending comment", err);
       }
     } catch (err) {
       console.error(err);
@@ -389,10 +417,11 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     }));
 
     try {
-      const commentRef = doc(db, 'comments', commentId);
-      await setDoc(commentRef, {
-        likes: isLiked ? arrayRemove(uid) : arrayUnion(uid)
-      }, { merge: true });
+      if (isLiked) {
+         await supabase.from('comments').update({ likes: currentLikes.filter(id => id !== uid) }).eq('id', commentId);
+      } else {
+         await supabase.from('comments').update({ likes: [...currentLikes, uid] }).eq('id', commentId);
+      }
     } catch (err) {
       console.error("Error toggling comment like:", err);
     }
@@ -569,7 +598,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     }
 
     if (quiz.id) {
-      updateDoc(doc(db, 'quizzes', quiz.id), { progress: null }).catch(console.error);
+      supabase.from('quizzes').update({ progress: null }).eq('id', toValidUUID(quiz.id)).then(({error}) => { if(error) console.error(error); });
     }
 
     onFinish(score, totalAnsweredCount, missed, categoryStats, secondsElapsed);

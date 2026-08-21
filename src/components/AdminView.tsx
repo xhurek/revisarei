@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, getDocs, doc, updateDoc, deleteDoc, orderBy, where, addDoc } from 'firebase/firestore';
 import { UserProfile, ErrorReport, TitleDefinition, TitleCriteria } from '../types';
 import { getCachedTitles, setCachedTitles } from '../lib/staticCache';
+import { SupabaseMigrator } from './SupabaseMigrator';
+import { syncUserProfileToSupabase, deleteUserFromSupabase } from '../lib/supabaseUser';
+import { supabase, toValidUUID } from '../lib/supabase';
+import { showToast } from '../lib/toast';
 import { 
   User, Stethoscope, Users, AlertTriangle, CheckCircle, X, Shield, ShieldCheck, Trash2, Edit3, 
   Tag as TagIcon, Mail, Clock, Plus, Target, Flame, Calendar, Award, 
@@ -73,59 +75,64 @@ export function AdminView() {
   const fetchAdminData = async () => {
     setLoading(true);
     try {
-      // Fetch users
-      const usersSnap = await getDocs(collection(db, 'users'));
-      const fetchedUsers = usersSnap.docs.map(doc => {
-         const data = doc.data();
-         return { 
-           uid: doc.id, 
-           ...data,
-           earnedTitles: data.earnedTitles || []
-         } as UserProfile;
-      });
-      setUsers(fetchedUsers);
+      // 1. Fetch users from Supabase
+      let loadedUsers: UserProfile[] = [];
+      try {
+        const { data: supaUsers, error: sErr } = await supabase.from('users').select('*');
+        if (!sErr && supaUsers && supaUsers.length > 0) {
+          loadedUsers = supaUsers.map((row: any) => ({
+            uid: row.id,
+            name: row.name || 'Usuário',
+            email: row.email || '',
+            photo: row.photo_url || '',
+            title: row.title || 'Calouro',
+            earnedTitles: Array.isArray(row.earned_titles) ? row.earned_titles : [],
+            streak: row.streak_days || 0,
+            xp: row.xp || 0,
+            authorized: row.authorized === true || row.email === 'rmourari@ufpi.edu.br'
+          } as UserProfile));
+        }
+      } catch (sErr) {
+        console.warn("Supabase admin users fetch error:", sErr);
+      }
+      setUsers(loadedUsers);
 
       // Fetch reports
-      const reportsQuery = query(collection(db, 'error_reports'), orderBy('createdAt', 'desc'));
-      const reportsSnap = await getDocs(reportsQuery);
-      setReports(reportsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as ErrorReport)));
+      try {
+        const { data: supaReports, error: repErr } = await supabase.from('error_reports').select('*').order('created_at', { ascending: false });
+        if (!repErr && supaReports) {
+           setReports(supaReports.map((row: any) => ({
+              id: row.id,
+              message: row.description || row.reason || '',
+              userName: 'Usuário',
+              status: row.status || 'pending',
+              createdAt: row.created_at
+           } as ErrorReport)));
+        }
+      } catch (rErr) {
+        console.warn("Error reports fetch fallback:", rErr);
+      }
 
       // Fetch titles
-      const titlesSnap = await getDocs(query(collection(db, 'titles'), orderBy('requirement', 'asc')));
-      const rawTitles = titlesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as TitleDefinition));
-
-      // De-duplicate by name and clean up duplicates from Firestore if any exist
-      const seenNames = new Set<string>();
-      const uniqueTitlesList: TitleDefinition[] = [];
-      const duplicateIdsToDelete: string[] = [];
-
-      for (const t of rawTitles) {
-        const key = (t.name || '').trim().toLowerCase();
-        if (!key) continue;
-        if (!seenNames.has(key)) {
-          seenNames.add(key);
-          uniqueTitlesList.push(t);
-        } else if (t.id) {
-          duplicateIdsToDelete.push(t.id);
+      try {
+        const { data: supaTitles, error: tErr } = await supabase.from('titles').select('*').order('requirement', { ascending: true });
+        if (!tErr && supaTitles) {
+           const uniqueTitlesList = supaTitles.map((row: any) => ({
+              id: row.id,
+              name: row.name,
+              requirement: row.requirement,
+              criteria: row.criteria,
+              icon: row.icon,
+              color: row.color
+           } as TitleDefinition));
+           setTitles(uniqueTitlesList);
+           setCachedTitles(uniqueTitlesList);
         }
+      } catch (tErr) {
+        console.warn("Titles fetch fallback:", tErr);
       }
-
-      // Automatically clean up duplicate docs from Firestore
-      if (duplicateIdsToDelete.length > 0) {
-        for (const dupId of duplicateIdsToDelete) {
-          try {
-            await deleteDoc(doc(db, 'titles', dupId));
-          } catch (e) {
-            console.warn('Failed to delete duplicate title doc:', dupId, e);
-          }
-        }
-      }
-
-      setTitles(uniqueTitlesList);
-      setCachedTitles(uniqueTitlesList);
 
     } catch (err) {
-      handleFirestoreError(err, OperationType.GET, 'admin/data');
       console.error(err);
     } finally {
       setLoading(false);
@@ -138,30 +145,40 @@ export function AdminView() {
 
   const handleToggleAuth = async (user: UserProfile) => {
     try {
-      const userRef = doc(db, 'users', user.uid);
-      await updateDoc(userRef, { authorized: !user.authorized });
-      setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, authorized: !user.authorized } : u));
+      const newAuth = !user.authorized;
+      const { error: sErr } = await supabase.from('users').update({ authorized: newAuth }).eq('id', user.uid);
+      if (sErr) {
+        console.error("Supabase toggle auth error:", sErr);
+        showToast('Erro ao atualizar autorização', sErr.message);
+        return;
+      }
+      setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, authorized: newAuth } : u));
+      showToast(newAuth ? 'Usuário Autorizado!' : 'Autorização Revogada', user.name || user.email);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+      console.error(err);
+      showToast('Erro ao atualizar autorização');
     }
   };
 
   const handleUpdateTitle = async (user: UserProfile, newTitle: string) => {
     if (!newTitle.trim()) return;
     try {
-      const userRef = doc(db, 'users', user.uid);
       const currentEarned = user.earnedTitles || [];
       const updatedEarned = currentEarned.includes(newTitle) ? currentEarned : [...currentEarned, newTitle];
       
-      await updateDoc(userRef, { 
-        title: newTitle,
-        earnedTitles: updatedEarned
-      });
+      // 1. Supabase Sync
+      try {
+        await syncUserProfileToSupabase({
+          uid: user.uid,
+          title: newTitle,
+          earnedTitles: updatedEarned
+        });
+      } catch (sErr) {
+        console.warn("Supabase update title error:", sErr);
+      }
       setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, title: newTitle, earnedTitles: updatedEarned } : u));
-      // removed alert
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
-      // removed alert
+      console.error(err);
     }
   };
 
@@ -212,16 +229,20 @@ export function AdminView() {
       };
 
       if (editingTitleId) {
-        await updateDoc(doc(db, 'titles', editingTitleId), titleData);
-        const updated = titles.map(t => t.id === editingTitleId ? { id: editingTitleId, ...titleData } : t).sort((a, b) => a.requirement - b.requirement);
-        setTitles(updated);
-        setCachedTitles(updated);
-        setEditingTitleId(null);
+        const { data, error } = await supabase.from('titles').update(titleData).eq('id', editingTitleId).select().single();
+        if (!error && data) {
+          const updated = titles.map(t => t.id === editingTitleId ? { id: data.id, ...titleData } : t).sort((a, b) => a.requirement - b.requirement);
+          setTitles(updated);
+          setCachedTitles(updated);
+          setEditingTitleId(null);
+        }
       } else {
-        const docRef = await addDoc(collection(db, 'titles'), titleData);
-        const updated = [...titles, { id: docRef.id, ...titleData }].sort((a, b) => a.requirement - b.requirement);
-        setTitles(updated);
-        setCachedTitles(updated);
+        const { data, error } = await supabase.from('titles').insert(titleData).select().single();
+        if (!error && data) {
+           const updated = [...titles, { id: data.id, ...titleData }].sort((a, b) => a.requirement - b.requirement);
+           setTitles(updated);
+           setCachedTitles(updated);
+        }
       }
       
       setNewTitleName('');
@@ -231,7 +252,7 @@ export function AdminView() {
       setSelectedColorIndex(0);
       setTitleFormError(null);
     } catch (err) {
-      handleFirestoreError(err, editingTitleId ? OperationType.UPDATE : OperationType.CREATE, 'titles');
+      console.warn("Erro ao adicionar título:", err);
     }
   };
 
@@ -264,11 +285,8 @@ export function AdminView() {
 
 
   const handleRestoreDefaults = async () => {
-    // removed confirm
     try {
-      const snap = await getDocs(collection(db, 'titles'));
-      const deletions = snap.docs.map(doc => deleteDoc(doc.ref));
-      await Promise.all(deletions);
+      await supabase.from('titles').delete().neq('id', '00000000-0000-0000-0000-000000000000');
       
       const defaults = [
         { name: 'Calouro', requirement: 0, criteria: 'total_questions', icon: 'User', color: 'bg-slate-50|text-slate-600|border-slate-200' },
@@ -282,54 +300,66 @@ export function AdminView() {
       ];
 
       for (const t of defaults) {
-        await addDoc(collection(db, 'titles'), t);
+        await supabase.from('titles').insert(t);
       }
       
-      // removed alert
       await fetchAdminData();
     } catch (err) {
       console.error(err);
-      // removed alert
     }
   };
 
   const handleDeleteTitleDef = async (id: string) => {
-    // removed confirm
     try {
-      await deleteDoc(doc(db, 'titles', id));
+      await supabase.from('titles').delete().eq('id', id);
       const updated = titles.filter(t => t.id !== id);
       setTitles(updated);
       setCachedTitles(updated);
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `titles/${id}`);
+      console.error("Error deleting title:", err);
     }
   };
 
   const handleDeleteUser = async (userId: string) => {
-    // removed confirm
     try {
-      await deleteDoc(doc(db, 'users', userId));
+      try {
+        await deleteUserFromSupabase(userId);
+      } catch (sErr) {
+        console.warn("Supabase delete user error:", sErr);
+      }
+
+      await supabase.from('users').delete().eq('id', userId);
       setUsers(prev => prev.filter(u => u.uid !== userId));
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `users/${userId}`);
+      console.error("Error deleting user:", err);
     }
   };
 
   const handleResolveReport = async (reportId: string) => {
     try {
-      await updateDoc(doc(db, 'error_reports', reportId), { status: 'resolved' });
+      try {
+        await supabase.from('reports').update({ status: 'resolved' }).eq('id', toValidUUID(reportId));
+      } catch (supaErr) {
+        console.warn("Supabase resolve report error:", supaErr);
+      }
+      await supabase.from('error_reports').update({ status: 'resolved' }).eq('id', reportId);
       setReports(prev => prev.map(r => r.id === reportId ? { ...r, status: 'resolved' } : r));
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `error_reports/${reportId}`);
+      console.error("Error resolving report:", err);
     }
   };
 
   const handleDeleteReport = async (reportId: string) => {
     try {
-      await deleteDoc(doc(db, 'error_reports', reportId));
+      try {
+        await supabase.from('reports').delete().eq('id', toValidUUID(reportId));
+      } catch (supaErr) {
+        console.warn("Supabase delete report error:", supaErr);
+      }
+      await supabase.from('error_reports').delete().eq('id', reportId);
       setReports(prev => prev.filter(r => r.id !== reportId));
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `error_reports/${reportId}`);
+      console.error("Error deleting report:", err);
     }
   };
 
@@ -347,6 +377,8 @@ export function AdminView() {
         <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">GERENCIAMENTO DO SISTEMA</h2>
         <h1 className="text-2xl md:text-3xl font-bold text-slate-900 border-l-4 border-indigo-600 pl-4 mt-1">Painel do Administrador</h1>
       </div>
+
+      <SupabaseMigrator />
 
       <div className="flex gap-4 border-b border-slate-200 overflow-x-auto pb-px">
         {[
