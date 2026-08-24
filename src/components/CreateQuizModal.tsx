@@ -37,7 +37,7 @@ export function CreateQuizModal({
         setIsLoadingQuestions(true);
         (async () => {
           try {
-            const { data, error } = await supabase.from('question_bank').select('*').limit(300);
+            const { data, error } = await supabase.from('question_bank').select('*').limit(10000);
             if (!error && data && data.length > 0) {
               const list = data.map((d: any) => ({
                 id: d.id,

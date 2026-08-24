@@ -164,11 +164,11 @@ export function PlannerWidget() {
     const startingDay = firstDayOfMonth.getDay(); // 0 is Sunday
     
     const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
-    const dayNames = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+    const dayNames = ["D", "S", "T", "Q", "Q", "S", "S"];
     
     const days = [];
     for (let i = 0; i < startingDay; i++) {
-      days.push(<div key={`empty-${i}`} className="w-5 h-5 sm:w-6 sm:h-6"></div>);
+      days.push(<div key={`empty-${i}`} className="w-full aspect-square max-w-[2rem] mx-auto"></div>);
     }
     
     for (let i = 1; i <= daysInMonth; i++) {
@@ -183,7 +183,7 @@ export function PlannerWidget() {
           key={i}
           onClick={() => setSelectedDate(d)}
           className={cn(
-            "relative w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center rounded-full text-[10px] sm:text-xs font-medium transition-colors cursor-pointer",
+            "relative w-full aspect-square max-w-[2.25rem] mx-auto flex items-center justify-center rounded-full text-[11px] sm:text-xs font-bold transition-colors cursor-pointer",
             isSelected ? "bg-indigo-600 text-white shadow-md" : "hover:bg-slate-100 text-slate-700",
             isToday && !isSelected && "border border-indigo-300 text-indigo-700 bg-indigo-50"
           )}
@@ -220,7 +220,7 @@ export function PlannerWidget() {
         </div>
         
         <div className="grid grid-cols-7 gap-1 mb-1 text-center text-[10px] font-bold text-slate-400">
-          {dayNames.map(d => <div key={d}>{d}</div>)}
+          {dayNames.map((d, idx) => <div key={idx}>{d}</div>)}
         </div>
         <div className="grid grid-cols-7 gap-1 flex-1">
           {days}
@@ -300,7 +300,7 @@ export function PlannerWidget() {
                       />
                       <button
                         onClick={() => removeTask(task.id)}
-                        className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-all p-1 shrink-0 cursor-pointer"
+                        className="opacity-100 lg:opacity-0 lg:group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-all p-1 shrink-0 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

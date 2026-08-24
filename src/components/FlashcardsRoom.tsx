@@ -540,7 +540,32 @@ export function FlashcardsRoom() {
     }
   };
 
+  const handleSelectRevisaoGeral = () => {
+    if (totalDue === 0) {
+      showToast({
+        title: 'Tudo em dia!',
+        description: 'Você não tem flashcards pendentes na revisão geral.',
+        icon: 'trophy'
+      });
+      return;
+    }
+    setCurrentIndex(0);
+    setFinished(false);
+    setSelectedTag('ALL');
+  };
+
   const handleSelectDeck = (tag: string) => {
+    const group = tagGroups[tag];
+    if (group && group.due === 0) {
+      showToast({
+        title: 'Tudo em dia!',
+        description: 'Nenhum flashcard pendente neste deck.',
+        icon: 'trophy'
+      });
+      return;
+    }
+    setCurrentIndex(0);
+    setFinished(false);
     setSelectedTag(tag);
     if (tag !== 'ALL' && tag !== 'CREATE_CARD') {
       const now = new Date().toISOString();
@@ -767,9 +792,9 @@ export function FlashcardsRoom() {
       setAllCards(updatedCards);
       
       // Check if we need to adjust index or finish review
-      const remainingInDeck = selectedTag === 'ALL' 
+      const remainingInDeck = (selectedTag === 'ALL' 
         ? updatedCards 
-        : updatedCards.filter(c => (c.tag || 'Sem tag') === selectedTag);
+        : updatedCards.filter(c => (c.tag || 'Sem tag') === selectedTag)).filter(c => new Date(c.nextReview).getTime() <= Date.now());
         
       if (remainingInDeck.length === 0) {
         setFinished(true);
@@ -939,7 +964,7 @@ export function FlashcardsRoom() {
                         <p className="text-xs font-bold text-slate-800 truncate" title={card.question.replace(/<[^>]+>/g, '')}>{card.question.replace(/<[^>]+>/g, '') || '(Sem frente)'}</p>
                         <p className="text-[10px] text-slate-500 truncate mt-0.5" title={card.answer.replace(/<[^>]+>/g, '')}>{card.answer.replace(/<[^>]+>/g, '')}</p>
                       </div>
-                      <div className="shrink-0 p-1.5 bg-white text-indigo-600 rounded-md shadow-sm border border-slate-200 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="shrink-0 p-1.5 bg-white text-indigo-600 rounded-md shadow-sm border border-slate-200 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                         <Edit3 className="w-3 h-3" />
                       </div>
                     </div>
@@ -1180,7 +1205,7 @@ export function FlashcardsRoom() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div 
-            onClick={() => setSelectedTag('ALL')}
+            onClick={handleSelectRevisaoGeral}
             className="bg-indigo-600 text-white p-6 rounded-2xl shadow-lg shadow-indigo-200 cursor-pointer hover:bg-indigo-700 transition flex flex-col justify-between min-h-[160px]"
           >
             <div className="flex items-start justify-between">
@@ -1252,9 +1277,9 @@ export function FlashcardsRoom() {
     );
   }
 
-  const currentCards = selectedTag === 'ALL' 
+  const currentCards = (selectedTag === 'ALL' 
     ? allCards 
-    : allCards.filter(c => (c.tag || 'Sem tag') === selectedTag);
+    : allCards.filter(c => (c.tag || 'Sem tag') === selectedTag)).filter(c => new Date(c.nextReview).getTime() <= Date.now());
 
   if (finished || currentCards.length === 0) {
     return (
@@ -1270,7 +1295,7 @@ export function FlashcardsRoom() {
           <p className="text-slate-500 max-w-xs mx-auto">Você revisou este deck com sucesso.</p>
         </div>
         <button 
-          onClick={() => { setFinished(false); setSelectedTag(null); }}
+          onClick={() => { setFinished(false); setSelectedTag(null); fetchCards(true, true); }}
           className="px-8 py-3 bg-indigo-600 shadow-lg shadow-indigo-100 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors"
         >
           Voltar para Decks
@@ -1289,11 +1314,16 @@ export function FlashcardsRoom() {
       {/* Header Info */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button onClick={() => setSelectedTag(null)} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 transition-colors">
+          <button onClick={() => { setSelectedTag(null); fetchCards(true, true); }} className="p-2 hover:bg-slate-200 rounded-lg text-slate-500 transition-colors">
              <X className="w-5 h-5" />
           </button>
           <div className="flex items-center gap-2 px-3 py-1 bg-slate-200 text-slate-600 rounded-lg text-xs font-bold tracking-widest uppercase">
             {selectedTag === 'ALL' ? 'Revisão Geral' : selectedTag}
+            {selectedTag === 'ALL' && currentCard?.tag && (
+              <span className="ml-2 px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-md text-[10px]">
+                {currentCard.tag}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">

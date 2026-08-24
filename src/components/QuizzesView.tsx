@@ -55,7 +55,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
   const [availableTags, setAvailableTags] = useState<BankTagItem[]>(() => getCachedBankTags());
   const [bankQuestions, setBankQuestions] = useState<any[]>(() => {
     try {
-      const stored = sessionStorage.getItem('cached_full_questionBank');
+      const stored = sessionStorage.getItem('cached_full_question_bank_v2');
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 40) return parsed;
@@ -82,7 +82,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
     if ((isCreateQuizModalOpen || isCreating) && bankQuestions.length <= 40) {
       (async () => {
         try {
-          const { data, error } = await supabase.from('questions').select('*').limit(2000);
+          const { data, error } = await supabase.from('question_bank').select('*').limit(10000);
           if (!error && data) {
             const list = data.map((d: any) => ({
                  id: d.id,
@@ -98,7 +98,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
                  explanation: d.explanation
             }));
             setBankQuestions(list);
-            try { sessionStorage.setItem('cached_full_questionBank', JSON.stringify(list)); } catch {}
+            try { sessionStorage.setItem('cached_full_question_bank_v2', JSON.stringify(list)); } catch {}
           }
         } catch (err) {
           console.error("Error loading full bankQuestions for quiz modal:", err);
@@ -851,7 +851,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
                     <div className="flex justify-between items-start">
                       <Folder className="w-8 h-8 text-white/80" />
                       
-                      <div className="color-picker flex gap-1 relative opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="color-picker flex gap-1 relative opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                          <button 
                            className="p-1.5 hover:bg-white/20 rounded-md" 
                            title="Editar pasta" 
@@ -913,7 +913,7 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {quizzes.filter(q => (q.mainTag || q.tag || "Sem assunto") === selectedFolder).map((q) => (
                   <div key={q.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-indigo-300 hover:shadow-md transition-all flex flex-col h-full relative group">
-                    <div className="absolute top-4 right-4 flex gap-1 bg-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="absolute top-4 right-4 flex gap-1 bg-white rounded-md opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                       <button onClick={(e) => { e.stopPropagation(); setEditingQuiz(q); setEditTitle(q.title); setEditMainTag(q.mainTag || q.tag || ''); setEditSubtags((Array.isArray(q.subtags) ? q.subtags : (typeof q.subtags === 'object' && q.subtags !== null ? Object.values(q.subtags) : ((q as any).subtag ? [(q as any).subtag] : []))).filter((t): t is string => t !== null && t !== undefined && typeof t === 'string' && t.trim() !== '')); setEditIsPublic(!!q.isPublic) }} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="Editar pasta ou nome">
                         <Pencil className="w-4 h-4" />
                       </button>

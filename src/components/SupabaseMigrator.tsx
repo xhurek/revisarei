@@ -571,6 +571,7 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS responses_total INTEGER DEFAUL
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS saves_total INTEGER DEFAULT 0;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS category_stats JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS folder_colors JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.quizzes ADD COLUMN IF NOT EXISTS progress JSONB;
 
 -- 2. Criar tabela de Cronograma e Metas (PLANNER)
 CREATE TABLE IF NOT EXISTS public.planner (

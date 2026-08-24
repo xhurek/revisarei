@@ -61,6 +61,8 @@ export function AdminView() {
   const [titles, setTitles] = useState<TitleDefinition[]>([]);
   const [activeTab, setActiveTab] = useState<'users' | 'reports' | 'titles'>('users');
   const [loading, setLoading] = useState(true);
+  const [schemaErrorDetected, setSchemaErrorDetected] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
 
   // New Title Form State
   const [newTitleName, setNewTitleName] = useState('');
@@ -149,14 +151,19 @@ export function AdminView() {
       const { error: sErr } = await supabase.from('users').update({ authorized: newAuth }).eq('id', user.uid);
       if (sErr) {
         console.error("Supabase toggle auth error:", sErr);
-        showToast('Erro ao atualizar autorização', sErr.message);
+        if (sErr.message?.includes('authorized') || sErr.message?.includes('schema cache') || sErr.message?.includes('column')) {
+          setSchemaErrorDetected(true);
+          showToast('Coluna "authorized" ausente no Supabase', 'Execute o comando SQL abaixo no SQL Editor do Supabase.');
+        } else {
+          showToast('Erro ao atualizar autorização', sErr.message);
+        }
         return;
       }
       setUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, authorized: newAuth } : u));
       showToast(newAuth ? 'Usuário Autorizado!' : 'Autorização Revogada', user.name || user.email);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      showToast('Erro ao atualizar autorização');
+      showToast('Erro ao atualizar autorização', err?.message);
     }
   };
 
@@ -412,6 +419,43 @@ export function AdminView() {
           </motion.div>
         ) : activeTab === 'users' ? (
           <motion.div key="users" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }} className="grid gap-4">
+            {schemaErrorDetected && (
+              <div className="bg-amber-50 border border-amber-200 rounded-3xl p-5 shadow-sm space-y-3">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 space-y-1">
+                    <h4 className="font-bold text-amber-900 text-sm">Coluna "authorized" precisa ser criada no Supabase</h4>
+                    <p className="text-xs text-amber-800 leading-relaxed">
+                      O Supabase acusou que a coluna <code>authorized</code> ainda não existe na tabela <code>users</code>. Para resolver em 10 segundos:
+                    </p>
+                    <ol className="text-xs text-amber-800 list-decimal list-inside space-y-1 pt-1">
+                      <li>Abra seu painel do Supabase e acesse o <b>SQL Editor</b> no menu lateral esquerdo.</li>
+                      <li>Cole o comando abaixo e clique em <b>RUN (Executar)</b>.</li>
+                    </ol>
+                  </div>
+                </div>
+
+                <div className="relative bg-slate-900 text-slate-100 rounded-2xl p-4 font-mono text-xs overflow-x-auto">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT FALSE;\nNOTIFY pgrst, 'reload schema';`);
+                      setCopiedSql(true);
+                      setTimeout(() => setCopiedSql(false), 3000);
+                      showToast('Comando SQL copiado!', 'Cole no SQL Editor do Supabase e clique em Run');
+                    }}
+                    className="absolute top-3 right-3 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                  >
+                    {copiedSql ? <CheckCircle className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                    {copiedSql ? 'Copiado!' : 'Copiar SQL'}
+                  </button>
+                  <pre className="pr-24 select-all leading-relaxed whitespace-pre-wrap">
+{`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS authorized BOOLEAN DEFAULT FALSE;
+NOTIFY pgrst, 'reload schema';`}
+                  </pre>
+                </div>
+              </div>
+            )}
+
             {users.map(user => (
               <div key={user.uid} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col md:flex-row gap-6 items-start md:items-center">
                 <div className="flex-1 space-y-1">

@@ -50,7 +50,7 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
 
   const [modalBankQuestions, setModalBankQuestions] = useState<BankQuestion[]>(() => {
     try {
-      const stored = sessionStorage.getItem('cached_full_questionBank');
+      const stored = sessionStorage.getItem('cached_full_question_bank_v2');
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed) && parsed.length > 40) return parsed;
@@ -63,11 +63,11 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
     if (isCreateQuizModalOpen && modalBankQuestions.length <= 40) {
       (async () => {
         try {
-          const { data: snap } = await supabase.from('question_bank').select('*').limit(100);
+          const { data: snap } = await supabase.from('question_bank').select('*').limit(10000);
         if (!snap) return;
         const list = snap.map((doc: any) => ({ id: doc.id, ...doc, correctAnswer: doc.correct_answer, mainTag: doc.main_tag } as any));
         setModalBankQuestions(list);
-        try { sessionStorage.setItem('cached_full_questionBank', JSON.stringify(list)); } catch {}
+        try { sessionStorage.setItem('cached_full_question_bank_v2', JSON.stringify(list)); } catch {}
       } catch(err) {
           console.error("Error loading questions for quiz modal:", err);
         }

@@ -237,7 +237,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     }));
   }, [quiz.questions]);
 
-  const progressData = quiz.progress || {};
+  const progressData = quiz.progress || JSON.parse(localStorage.getItem('quiz_progress_' + quiz.id) || '{}');
   const [currentIndex, setCurrentIndex] = useState(progressData.currentIndex || 0);
   const [answers, setAnswers] = useState<{ [key: string]: string }>(progressData.answers || {});
   const [revealed, setRevealed] = useState<{ [key: string]: boolean }>(progressData.revealed || {});
@@ -277,6 +277,16 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
 
   const currentQuestion = questions[currentIndex];
   const progress = ((currentIndex) / questions.length) * 100;
+  
+  const actionsRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (currentQuestion && revealed[currentQuestion.id] && actionsRef.current) {
+      setTimeout(() => {
+        actionsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      }, 100);
+    }
+  }, [revealed, currentQuestion?.id]);
 
   const handlePause = async () => {
     if (quiz.id) {
@@ -289,9 +299,10 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
       };
 
       try {
-        await supabase.from('quizzes').update({
+        const { error: supaErr } = await supabase.from('quizzes').update({
           progress: progressPayload
         }).eq('id', toValidUUID(quiz.id));
+        if (supaErr && supaErr.code !== 'PGRST204') { console.warn("Supabase update progress error:", supaErr); } else if (supaErr && supaErr.code === 'PGRST204') { localStorage.setItem('quiz_progress_' + quiz.id, JSON.stringify(progressPayload)); }
       } catch (supaErr) {
         console.warn("Supabase update progress error:", supaErr);
       }
@@ -598,7 +609,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
     }
 
     if (quiz.id) {
-      supabase.from('quizzes').update({ progress: null }).eq('id', toValidUUID(quiz.id)).then(({error}) => { if(error) console.error(error); });
+      supabase.from('quizzes').update({ progress: null }).eq('id', toValidUUID(quiz.id)).then(({error}) => { if(error && error.code !== 'PGRST204') console.error(error); else if (error && error.code === 'PGRST204') localStorage.removeItem('quiz_progress_' + quiz.id); });
     }
 
     onFinish(score, totalAnsweredCount, missed, categoryStats, secondsElapsed);
@@ -898,7 +909,7 @@ export function QuizRoom({ quiz, userData, onFinish, onCancel }: QuizRoomProps) 
                  </div>
               )}
 
-              <div className="flex flex-col sm:flex-row justify-end items-center mt-6 pt-6 gap-3 border-t border-slate-100">
+              <div ref={actionsRef} className="flex flex-col sm:flex-row justify-end items-center mt-6 pt-6 gap-3 border-t border-slate-100">
                  <button
                     onClick={handleCopyNotebookLM}
                     className="text-sm font-bold text-slate-600 bg-slate-100 px-5 py-3 rounded-xl hover:bg-slate-200 transition-colors flex items-center justify-center gap-2 w-full sm:w-auto"

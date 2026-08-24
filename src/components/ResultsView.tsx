@@ -108,7 +108,8 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
   const [savingCards, setSavingCards] = useState(false);
   const [saved, setSaved] = useState(false);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
-  const [aiTopics, setAiTopics] = useState<Record<number, { topic: string; subtopic: string }>>({});
+  const [aiTopics, setAiTopics] = useState<Record<number, { topic: string; subtopic: string; flashcardQuestion?: string; flashcardAnswer?: string }>>({});
+  const [isAnalyzing, setIsAnalyzing] = useState(results.missed && results.missed.length > 0);
 
   const totalQuestions = Number(results.total) || 0;
   const scoreCount = Number(results.score) || 0;
@@ -118,7 +119,14 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
 
   // Asynchronously request precise AI topic analysis for missed questions
   useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  useEffect(() => {
     if (!results.missed || results.missed.length === 0) return;
+
+    setIsAnalyzing(true);
+    setSavingCards(true);
 
     apiFetch('/api/analyze-missed-topics', {
       method: 'POST',
@@ -130,17 +138,57 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
       .then(async (res) => {
         const data = await parseJsonResponse(res);
         if (data.analysis && Array.isArray(data.analysis)) {
-          const map: Record<number, { topic: string; subtopic: string }> = {};
+          const map: Record<number, { topic: string; subtopic: string; flashcardQuestion?: string; flashcardAnswer?: string }> = {};
+          
+          const generatedCards: Flashcard[] = [];
+          
           data.analysis.forEach((item: any) => {
             if (item.topic && item.subtopic) {
-              map[item.id] = { topic: item.topic, subtopic: item.subtopic };
+              map[item.id] = { 
+                topic: item.topic, 
+                subtopic: item.subtopic,
+                flashcardQuestion: item.flashcardQuestion,
+                flashcardAnswer: item.flashcardAnswer
+              };
+
+              // Auto generate flashcard
+              if (item.flashcardQuestion && item.flashcardAnswer && auth.currentUser) {
+                const m = results.missed[item.id];
+                if (m) {
+                  generatedCards.push({
+                    id: `fc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+                    question: item.flashcardQuestion,
+                    answer: item.flashcardAnswer,
+                    explanation: m.explanation || '',
+                    nextReview: new Date().toISOString(),
+                    interval: 0,
+                    easeFactor: 2.5,
+                    userId: auth.currentUser.uid,
+                    createdAt: new Date().toISOString(),
+                    tag: results.title || item.topic || results.tag || 'Caderno de Erros',
+                    subtag: 'Erros',
+                    subtags: ['Erros']
+                  });
+                }
+              }
             }
           });
+          
           setAiTopics(map);
+
+          if (generatedCards.length > 0 && auth.currentUser) {
+            importFlashcardsBatchToSupabase(auth.currentUser.uid, generatedCards)
+              .then(() => setSaved(true))
+              .catch(err => console.warn("Supabase auto-save flashcards error:", err));
+          }
         }
       })
       .catch((err) => {
         console.warn("AI topic analysis fallback to heuristic:", err);
+      })
+      .finally(() => {
+        setIsAnalyzing(false);
+        setSavingCards(false);
       });
   }, [results.missed]);
 
@@ -178,81 +226,6 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
       return `${mins}m ${secs}s`;
     }
     return `${secs}s`;
-  };
-
-  const handleConvertToFlashcards = async () => {
-    if (!auth.currentUser) return;
-    setSavingCards(true);
-
-    try {
-      const generatedCards: Flashcard[] = [];
-
-      for (let idx = 0; idx < results.missed.length; idx++) {
-        const m = results.missed[idx];
-        const info = aiTopics[idx] || extractTopicAndSubtopic(m);
-        const cardId = `fc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        const tag = results.title || info.topic || results.tag || 'Caderno de Erros';
-
-        try {
-          const response = await apiFetch('/api/generate-flashcard', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              question: m.question,
-              expectedAnswer: m.answer,
-              userAnswer: m.userAnswer || ''
-            })
-          });
-          
-          const flashcardData = await parseJsonResponse(response);
-          
-          generatedCards.push({
-            id: cardId,
-            question: flashcardData.flashcardQuestion || m.question,
-            answer: flashcardData.flashcardAnswer || m.answer,
-            explanation: flashcardData.explanation || m.explanation || '',
-            nextReview: new Date().toISOString(),
-            interval: 0,
-            easeFactor: 2.5,
-            userId: auth.currentUser!.uid,
-            createdAt: new Date().toISOString(),
-            tag: tag,
-            subtag: 'Erros',
-            subtags: ['Erros']
-          });
-        } catch (e) {
-          // Fallback to basic extraction if AI fails
-          generatedCards.push({
-            id: cardId,
-            question: m.question,
-            answer: m.answer,
-            explanation: m.explanation || '',
-            nextReview: new Date().toISOString(),
-            interval: 0,
-            easeFactor: 2.5,
-            userId: auth.currentUser!.uid,
-            createdAt: new Date().toISOString(),
-            tag: tag,
-            subtag: 'Erros',
-            subtags: ['Erros']
-          });
-        }
-      }
-
-      // 1. Save in Supabase
-      try {
-        await importFlashcardsBatchToSupabase(auth.currentUser!.uid, generatedCards);
-      } catch (sErr) {
-        console.warn("Supabase batch error in ResultsView:", sErr);
-      }
-
-      
-      setSaved(true);
-    } catch (error) {
-      console.error("Error saving flashcards:", error);
-    } finally {
-      setSavingCards(false);
-    }
   };
 
   return (
@@ -323,7 +296,13 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
           </div>
 
           <div className="flex flex-wrap gap-2.5 pt-1">
-            {topicsToReviewMap.map((item, idx) => {
+            {isAnalyzing ? (
+              <div className="flex flex-wrap gap-2 animate-pulse w-full">
+                <div className="h-10 w-32 bg-slate-200 rounded-xl"></div>
+                <div className="h-10 w-48 bg-slate-200 rounded-xl"></div>
+                <div className="h-10 w-40 bg-slate-200 rounded-xl"></div>
+              </div>
+            ) : topicsToReviewMap.map((item, idx) => {
               const isHoveredOrClicked = activeTooltip === item.topic;
               return (
                 <div 
@@ -365,18 +344,18 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
           <div className="absolute -right-4 -top-8 w-40 h-40 bg-white/5 rounded-full blur-2xl"></div>
           <div className="flex items-start justify-between relative z-10">
             <div className="space-y-1">
-              <h3 className="text-xl font-bold">Consolide seu Erro</h3>
-              <p className="text-sm text-indigo-100 opacity-90">As {results.missed.length} questões que você errou podem virar flashcards agora.</p>
+              <h3 className="text-xl font-bold">Consolidação do Erro</h3>
+              <p className="text-sm text-indigo-100 opacity-90">
+                Transformando seus erros em {results.missed.length} flashcards de memorização ativa.
+              </p>
             </div>
             <Brain className="w-8 h-8 text-indigo-200" />
           </div>
 
-          <button
-            disabled={savingCards || saved}
-            onClick={handleConvertToFlashcards}
+          <div
             className={cn(
-              "w-full py-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors relative z-10",
-              saved ? "bg-green-500 text-white" : "bg-white text-indigo-600 hover:bg-indigo-50"
+              "w-full py-4 rounded-xl font-bold flex items-center justify-center gap-2 relative z-10",
+              saved ? "bg-green-500 text-white" : "bg-white/10 text-indigo-50 border border-white/20"
             )}
           >
             {saved ? (
@@ -384,22 +363,17 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
                 <Check className="w-5 h-5" />
                 Flashcards Adicionados!
               </>
-            ) : savingCards ? (
+            ) : isAnalyzing || savingCards ? (
               <>
                 <motion.div
                   animate={{ rotate: 360 }}
                   transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                  className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full"
+                  className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
                 />
-                Salvando...
+                Analisando erros e gerando flashcards...
               </>
-            ) : (
-              <>
-                <Plus className="w-5 h-5" />
-                Criar Flashcards do Erro
-              </>
-            )}
-          </button>
+            ) : null}
+          </div>
         </section>
       )}
 
@@ -420,10 +394,10 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="px-2.5 py-1 bg-amber-50 text-amber-900 border border-amber-200 rounded-lg text-xs font-black">
-                      Assunto: {info.topic}
+                      Assunto: {isAnalyzing ? '...' : info.topic}
                     </span>
                     <span className="px-2.5 py-1 bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold">
-                      Subtema: {info.subtopic}
+                      Subtema: {isAnalyzing ? '...' : info.subtopic}
                     </span>
                   </div>
                 </div>

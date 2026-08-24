@@ -468,7 +468,7 @@ export function StudyNotesSection() {
                 <div className="flex justify-between items-start">
                   <Folder className="w-8 h-8 text-white/80" />
 
-                  <div className="color-picker flex gap-1 relative opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="color-picker flex gap-1 relative opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                      <button 
                        className="p-1.5 hover:bg-white/20 rounded-md" 
                        title="Editar pasta" 
@@ -537,7 +537,7 @@ export function StudyNotesSection() {
            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
              {notes.filter(n => n.folder === selectedFolder).map(note => (
                 <div key={note.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-emerald-300 hover:shadow-md transition-all flex flex-col h-full relative group">
-                   <div className="absolute top-4 right-4 flex gap-1 bg-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity">
+                   <div className="absolute top-4 right-4 flex gap-1 bg-white rounded-md opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity">
                       <button onClick={(e) => handleDeleteNote(note, e)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded" title="Excluir Material">
                          <Trash2 className="w-4 h-4" />
                       </button>
