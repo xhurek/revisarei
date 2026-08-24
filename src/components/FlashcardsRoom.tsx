@@ -19,6 +19,7 @@ import {
   updateDeckInSupabase,
   importFlashcardsBatchToSupabase
 } from '../lib/supabaseFlashcards';
+import { incrementFlashcardsReviewedInSupabase } from '../lib/supabaseUser';
 
 // Cache for loaded media files to avoid duplicate Firestore queries
 const mediaCache: Record<string, string> = {};
@@ -236,6 +237,16 @@ export function FlashcardsRoom() {
 
   useEffect(() => {
     fetchCards();
+
+    const handleUpdate = () => {
+      if (auth.currentUser) {
+        delete memoryCachedFlashcards[auth.currentUser.uid];
+      }
+      fetchCards(true, true);
+    };
+
+    window.addEventListener('flashcards_updated', handleUpdate);
+    return () => window.removeEventListener('flashcards_updated', handleUpdate);
   }, []);
 
   const fetchCards = async (background = false, forceRefresh = false) => {
@@ -354,10 +365,10 @@ export function FlashcardsRoom() {
       console.warn("Supabase update grade error:", e);
     });
 
-    
-
-    // 2. Update stats in Supabase
-    supabase.rpc('increment_flashcards_reviewed', { user_id: uid }).then(({ error }) => { if (error) console.warn("Supabase stats update error:", error); });
+    // 2. Update stats in Supabase de forma garantida e atômica
+    incrementFlashcardsReviewedInSupabase(uid, 1).catch(err => {
+      console.warn("Erro ao atualizar estatística de flashcards revisados:", err);
+    });
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1480,28 +1491,43 @@ export function FlashcardsRoom() {
 
       {/* SRS Controls */}
       <div className={cn(
-        "grid grid-cols-4 gap-3 transition-opacity duration-300",
+        "grid grid-cols-2 sm:grid-cols-4 gap-3 transition-opacity duration-300 w-full",
         !isFlipped ? "opacity-20 pointer-events-none blur-sm" : "opacity-100"
       )}>
-        <button onClick={() => handleGrade('again')} className="bg-red-500/10 hover:bg-red-500/20 py-4 rounded-xl flex flex-col items-center justify-center transition-colors">
-          <span className="text-xs font-bold text-red-500/80 mb-1 tracking-wide">ERREI</span>
-          <span className="text-[10px] text-red-400/60 font-medium font-sans mb-1.5">Novo</span>
-          <kbd className="bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/20 text-[9px] font-bold text-red-500 font-sans uppercase">Espaço / 1</kbd>
+        <button
+          onClick={() => handleGrade('again')}
+          className="w-full h-24 bg-rose-500/10 hover:bg-rose-500/20 active:scale-[0.98] border border-rose-500/20 rounded-2xl flex flex-col items-center justify-center p-2.5 transition-all cursor-pointer shadow-xs"
+        >
+          <span className="text-xs font-black text-rose-600 tracking-wider uppercase">ERREI</span>
+          <span className="text-[11px] text-rose-500/80 font-medium font-sans my-1">Novo</span>
+          <kbd className="bg-rose-500/15 px-2 py-0.5 rounded-md border border-rose-500/30 text-[9px] font-bold text-rose-700 font-sans uppercase whitespace-nowrap">Espaço / 1</kbd>
         </button>
-        <button onClick={() => handleGrade('hard')} className="bg-orange-500/10 hover:bg-orange-500/20 py-4 rounded-xl flex flex-col items-center justify-center transition-colors">
-          <span className="text-xs font-bold text-orange-500/80 mb-1 tracking-wide">DIFÍCIL</span>
-          <span className="text-[10px] text-orange-400/60 font-medium font-sans mb-1.5">1 dia</span>
-          <kbd className="bg-orange-500/10 px-1.5 py-0.5 rounded border border-orange-500/20 text-[9px] font-bold text-orange-500 font-sans uppercase">Tab / 2</kbd>
+
+        <button
+          onClick={() => handleGrade('hard')}
+          className="w-full h-24 bg-amber-500/10 hover:bg-amber-500/20 active:scale-[0.98] border border-amber-500/20 rounded-2xl flex flex-col items-center justify-center p-2.5 transition-all cursor-pointer shadow-xs"
+        >
+          <span className="text-xs font-black text-amber-600 tracking-wider uppercase">DIFÍCIL</span>
+          <span className="text-[11px] text-amber-600/80 font-medium font-sans my-1">1 dia</span>
+          <kbd className="bg-amber-500/15 px-2 py-0.5 rounded-md border border-amber-500/30 text-[9px] font-bold text-amber-700 font-sans uppercase whitespace-nowrap">Tab / 2</kbd>
         </button>
-        <button onClick={() => handleGrade('good')} className="bg-blue-500/10 hover:bg-blue-500/20 py-4 rounded-xl flex flex-col items-center justify-center transition-colors border border-blue-500/20">
-          <span className="text-xs font-bold text-blue-600/80 mb-1 tracking-wide">BOM</span>
-          <span className="text-[10px] text-blue-500/60 font-medium font-sans mb-1.5">3 dias</span>
-          <kbd className="bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20 text-[9px] font-bold text-blue-500 font-sans uppercase">Enter / 3</kbd>
+
+        <button
+          onClick={() => handleGrade('good')}
+          className="w-full h-24 bg-blue-500/10 hover:bg-blue-500/20 active:scale-[0.98] border border-blue-500/20 rounded-2xl flex flex-col items-center justify-center p-2.5 transition-all cursor-pointer shadow-xs"
+        >
+          <span className="text-xs font-black text-blue-600 tracking-wider uppercase">BOM</span>
+          <span className="text-[11px] text-blue-600/80 font-medium font-sans my-1">3 dias</span>
+          <kbd className="bg-blue-500/15 px-2 py-0.5 rounded-md border border-blue-500/30 text-[9px] font-bold text-blue-700 font-sans uppercase whitespace-nowrap">Enter / 3</kbd>
         </button>
-        <button onClick={() => handleGrade('easy')} className="bg-green-500/10 hover:bg-green-500/20 py-4 rounded-xl flex flex-col items-center justify-center transition-colors">
-          <span className="text-xs font-bold text-green-600/80 mb-1 tracking-wide">FÁCIL</span>
-          <span className="text-[10px] text-green-500/60 font-medium font-sans mb-1.5">7 dias</span>
-          <kbd className="bg-green-500/10 px-1.5 py-0.5 rounded border border-green-500/20 text-[9px] font-bold text-green-500 font-sans uppercase">Ctrl+Enter / 4</kbd>
+
+        <button
+          onClick={() => handleGrade('easy')}
+          className="w-full h-24 bg-emerald-500/10 hover:bg-emerald-500/20 active:scale-[0.98] border border-emerald-500/20 rounded-2xl flex flex-col items-center justify-center p-2.5 transition-all cursor-pointer shadow-xs"
+        >
+          <span className="text-xs font-black text-emerald-600 tracking-wider uppercase">FÁCIL</span>
+          <span className="text-[11px] text-emerald-600/80 font-medium font-sans my-1">7 dias</span>
+          <kbd className="bg-emerald-500/15 px-2 py-0.5 rounded-md border border-emerald-500/30 text-[9px] font-bold text-emerald-700 font-sans uppercase whitespace-nowrap">Ctrl+Enter / 4</kbd>
         </button>
       </div>
 

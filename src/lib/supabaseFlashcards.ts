@@ -386,6 +386,10 @@ export async function importFlashcardsBatchToSupabase(uid: string, cards: Flashc
         updated_at: new Date().toISOString()
       });
     }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('flashcards_updated'));
+    }
   } catch (err) {
     console.warn('Erro ao importar lote de flashcards no Supabase:', err);
   }

@@ -65,7 +65,21 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
         try {
           const { data: snap } = await supabase.from('question_bank').select('*').limit(10000);
         if (!snap) return;
-        const list = snap.map((doc: any) => ({ id: doc.id, ...doc, correctAnswer: doc.correct_answer, mainTag: doc.main_tag } as any));
+        const list = snap.map((doc: any) => ({
+          id: doc.id,
+          text: doc.text,
+          options: doc.options || [],
+          correctAnswer: doc.correct_answer !== undefined ? doc.correct_answer : (doc.correctAnswer || doc.answer || ''),
+          explanation: doc.explanation || '',
+          images: doc.images || [],
+          mainTag: (doc.main_tag || doc.discipline || doc.category || 'Geral').trim(),
+          subtag: (doc.subtag || doc.theme || doc.subject || '').trim(),
+          subtags: Array.isArray(doc.subtags) && doc.subtags.length > 0 
+            ? doc.subtags 
+            : (Array.isArray(doc.tags) && doc.tags.length > 0 ? doc.tags : (doc.subtag ? [doc.subtag] : (doc.theme ? [doc.theme] : (doc.subject ? [doc.subject] : (doc.subject_topic ? [doc.subject_topic] : []))))),
+          institution: (doc.institution || '').trim(),
+          year: doc.year !== undefined && doc.year !== null ? String(doc.year).trim() : ''
+        } as any));
         setModalBankQuestions(list);
         try { sessionStorage.setItem('cached_full_question_bank_v2', JSON.stringify(list)); } catch {}
       } catch(err) {
@@ -254,14 +268,16 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
             id: row.id,
             text: row.text,
             options: row.options || [],
-            correctAnswer: row.correct_answer || '',
+            correctAnswer: row.correct_answer !== undefined ? row.correct_answer : (row.correctAnswer || row.answer || ''),
             explanation: row.explanation || '',
             images: row.images || [],
-            mainTag: row.main_tag || row.discipline || '',
-            subtag: row.subtag || '',
-            subtags: Array.isArray(row.subtags) ? row.subtags : [],
-            institution: row.institution || '',
-            year: row.year || '',
+            mainTag: (row.main_tag || row.discipline || row.category || 'Geral').trim(),
+            subtag: (row.subtag || row.theme || row.subject || '').trim(),
+            subtags: Array.isArray(row.subtags) && row.subtags.length > 0 
+              ? row.subtags 
+              : (Array.isArray(row.tags) && row.tags.length > 0 ? row.tags : (row.subtag ? [row.subtag] : (row.theme ? [row.theme] : (row.subject ? [row.subject] : (row.subject_topic ? [row.subject_topic] : []))))),
+            institution: (row.institution || '').trim(),
+            year: row.year !== undefined && row.year !== null ? String(row.year).trim() : '',
             hasImageWarning: !!row.has_image_warning,
             createdAt: row.created_at,
             createdBy: row.created_by || 'unknown'
@@ -282,14 +298,16 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
                 id: row.id,
                 text: row.text,
                 options: row.options || [],
-                correctAnswer: row.correct_answer || '',
+                correctAnswer: row.correct_answer !== undefined ? row.correct_answer : (row.correctAnswer || row.answer || ''),
                 explanation: row.explanation || '',
                 images: row.images || [],
-                mainTag: row.main_tag || row.discipline || '',
-                subtag: row.subtag || '',
-                subtags: Array.isArray(row.subtags) ? row.subtags : [],
-                institution: row.institution || '',
-                year: row.year || '',
+                mainTag: (row.main_tag || row.discipline || row.category || 'Geral').trim(),
+                subtag: (row.subtag || row.theme || row.subject || '').trim(),
+                subtags: Array.isArray(row.subtags) && row.subtags.length > 0 
+                  ? row.subtags 
+                  : (Array.isArray(row.tags) && row.tags.length > 0 ? row.tags : (row.subtag ? [row.subtag] : (row.theme ? [row.theme] : (row.subject ? [row.subject] : (row.subject_topic ? [row.subject_topic] : []))))),
+                institution: (row.institution || '').trim(),
+                year: row.year !== undefined && row.year !== null ? String(row.year).trim() : '',
                 hasImageWarning: !!row.has_image_warning,
                 createdAt: row.created_at,
                 createdBy: row.created_by || 'unknown'
@@ -330,42 +348,41 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
     
     setLoading(true);
     try {
-      let usedSupabase = false;
-      try {
-        let q = supabase.from('question_bank').select('*').limit(1000);
-        if (filterMainTag) {
-          q = q.eq('main_tag', filterMainTag);
-        }
-        
-        const { data, error } = await q;
-        if (!error && data && data.length > 0) {
-          const list = data.map((row: any) => ({
-            id: row.id,
-            text: row.text,
-            options: row.options || [],
-            correctAnswer: row.correct_answer || '',
-            explanation: row.explanation || '',
-            images: row.images || [],
-            mainTag: row.main_tag || row.discipline || '',
-            subtag: row.subtag || '',
-            subtags: Array.isArray(row.subtags) ? row.subtags : [],
-            institution: row.institution || '',
-            year: row.year || '',
-            hasImageWarning: !!row.has_image_warning,
-            createdAt: row.created_at,
-            createdBy: row.created_by || 'unknown'
-          } as BankQuestion));
-          setQuestions(list);
-          setHasSearched(true);
-          setQuotaExceeded(false);
-          usedSupabase = true;
-        }
-      } catch (supaErr) {
-        console.warn("Supabase search error:", supaErr);
+      let q = supabase.from('question_bank').select('*').limit(3000);
+      
+      if (filterInstitution.trim()) {
+        q = q.ilike('institution', `%${filterInstitution.trim()}%`);
       }
-
-      } catch (err: any) {
-      console.error(err);
+      if (filterYear.trim()) {
+        q = q.eq('year', filterYear.trim());
+      }
+      
+      const { data, error } = await q;
+      if (!error && data) {
+        const list = data.map((row: any) => ({
+          id: row.id,
+          text: row.text,
+          options: row.options || [],
+          correctAnswer: row.correct_answer !== undefined ? row.correct_answer : (row.correctAnswer || row.answer || ''),
+          explanation: row.explanation || '',
+          images: row.images || [],
+          mainTag: (row.main_tag || row.discipline || row.category || 'Geral').trim(),
+          subtag: (row.subtag || row.theme || row.subject || '').trim(),
+          subtags: Array.isArray(row.subtags) && row.subtags.length > 0 
+            ? row.subtags 
+            : (Array.isArray(row.tags) && row.tags.length > 0 ? row.tags : (row.subtag ? [row.subtag] : (row.theme ? [row.theme] : (row.subject ? [row.subject] : (row.subject_topic ? [row.subject_topic] : []))))),
+          institution: (row.institution || '').trim(),
+          year: row.year !== undefined && row.year !== null ? String(row.year).trim() : '',
+          hasImageWarning: !!row.has_image_warning,
+          createdAt: row.created_at,
+          createdBy: row.created_by || 'unknown'
+        } as BankQuestion));
+        setQuestions(list);
+        setHasSearched(true);
+        setQuotaExceeded(false);
+      }
+    } catch (err: any) {
+      console.error("Supabase search error:", err);
       if (err?.message?.includes('Quota limit exceeded')) setQuotaExceeded(true);
     } finally {
       setLoading(false);
@@ -430,12 +447,33 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
     setRevealedAnswers(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const uniqueMainTags = Array.from(new Set(availableTags.map(t => t.name))).filter((x): x is string => Boolean(x)).sort();
-  const uniqueSubtags = Array.from(new Set(
-    filterMainTag 
-      ? availableTags.find(t => t.name === filterMainTag)?.subtags || []
-      : availableTags.flatMap(t => t.subtags)
-  )).filter((x): x is string => Boolean(x)).sort();
+  const basePredefinedMainTags = [
+    'Clínica Médica',
+    'Cirurgia Geral',
+    'Pediatria',
+    'Ginecologia',
+    'Obstetrícia',
+    'Medicina de Família e Comunidade',
+    'Outros'
+  ];
+
+  const uniqueMainTags = Array.from(new Set([
+    ...basePredefinedMainTags,
+    ...availableTags.map(t => t.name),
+    ...questions.map(q => q.mainTag)
+  ])).filter((x): x is string => Boolean(x) && x !== 'Sem assunto').sort();
+
+  const currentAvailableSubtags = filterMainTag 
+    ? [
+        ...(availableTags.find(t => t.name.toLowerCase() === filterMainTag.toLowerCase())?.subtags || []),
+        ...questions.filter(q => (q.mainTag || '').toLowerCase() === filterMainTag.toLowerCase()).flatMap(q => q.subtags || (q.subtag ? [q.subtag] : []))
+      ]
+    : [
+        ...availableTags.flatMap(t => t.subtags),
+        ...questions.flatMap(q => q.subtags || (q.subtag ? [q.subtag] : []))
+      ];
+
+  const uniqueSubtags = Array.from(new Set(currentAvailableSubtags)).filter((x): x is string => Boolean(x)).sort();
   
   // uniqueInstitutions and uniqueYears are removed since we are changing to text inputs
 
@@ -451,8 +489,17 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
       const inYear = String(q.year || '').toLowerCase().includes(s);
       if (!inText && !inSubtag && !inSubtags && !inInst && !inYear) return false;
     }
-    if (filterMainTag && q.mainTag !== filterMainTag) return false;
-    if (filterSubtag && !(q.subtags?.includes(filterSubtag) || q.subtag === filterSubtag)) return false;
+    if (filterMainTag) {
+      const qMain = (q.mainTag || '').toLowerCase();
+      if (qMain !== filterMainTag.toLowerCase()) return false;
+    }
+    if (filterSubtag) {
+      const qSubtags = [
+        ...(Array.isArray(q.subtags) ? q.subtags : []),
+        q.subtag
+      ].filter(Boolean).map(sub => String(sub).toLowerCase());
+      if (!qSubtags.includes(filterSubtag.toLowerCase())) return false;
+    }
     if (filterInstitution.trim() && !q.institution?.toLowerCase().includes(filterInstitution.toLowerCase().trim())) return false;
     if (filterYear.trim() && !String(q.year || '').toLowerCase().includes(filterYear.toLowerCase().trim())) return false;
     
@@ -547,12 +594,15 @@ export function QuestionBankView({ isAdmin }: { isAdmin: boolean }) {
             </div>
             <select 
               value={filterMainTag}
-              onChange={e => setFilterMainTag(e.target.value)}
-              className="flex-1 min-w-[180px] px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-indigo-600/20"
+              onChange={e => {
+                setFilterMainTag(e.target.value);
+                setFilterSubtag('');
+              }}
+              className="flex-1 min-w-[180px] px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-indigo-600/20 cursor-pointer"
             >
               <option value="">Todas as Grandes Áreas</option>
-              {availableTags.map(tag => (
-                <option key={tag.id} value={tag.name}>{tag.name}</option>
+              {uniqueMainTags.map((tag, i) => (
+                <option key={i} value={tag}>{tag}</option>
               ))}
             </select>
             <select 

@@ -8,6 +8,8 @@ export function CreateQuizModal({
   onClose, 
   questions = [], 
   userFolders = {}, 
+  folders = [],
+  initialFolder = '',
   uniqueMainTags = [], 
   uniqueSubtags = [], 
   uniqueInstitutions = [], 
@@ -17,7 +19,7 @@ export function CreateQuizModal({
 }: any) {
   const [newQuizTitle, setNewQuizTitle] = useState('');
   const [newQuizColor, setNewQuizColor] = useState('bg-indigo-500');
-  const [selectedFolderOption, setSelectedFolderOption] = useState('');
+  const [selectedFolderOption, setSelectedFolderOption] = useState(initialFolder || '');
   const [newFolderName, setNewFolderName] = useState('');
   const [modalFilters, setModalFilters] = useState<{mainTags: string[], subtags: string[], institutions: string[], years: string[]}>({ mainTags: [], subtags: [], institutions: [], years: [] });
   const [searchMainTags, setSearchMainTags] = useState('');
@@ -29,6 +31,63 @@ export function CreateQuizModal({
 
   const [loadedQuestions, setLoadedQuestions] = useState<any[]>([]);
   const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
+  const [dynamicFolders, setDynamicFolders] = useState<string[]>([]);
+
+  // Sync initial folder when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      if (initialFolder) {
+        setSelectedFolderOption(initialFolder);
+      }
+    }
+  }, [isOpen, initialFolder]);
+
+  // Load all existing folders from user's quizzes and profile in Supabase
+  useEffect(() => {
+    if (isOpen && auth?.currentUser) {
+      (async () => {
+        try {
+          const uid = auth.currentUser.uid;
+          const folderSet = new Set<string>();
+
+          // 1. Fetch user's quizzes
+          const { data: userQuizzes } = await supabase
+            .from('quizzes')
+            .select('discipline, theme')
+            .eq('user_id', uid);
+
+          if (userQuizzes) {
+            userQuizzes.forEach((q: any) => {
+              if (q.discipline && q.discipline !== 'Geral' && q.discipline !== 'Sem assunto') {
+                folderSet.add(q.discipline);
+              }
+              if (q.theme && q.theme !== 'Geral' && q.theme !== 'Sem assunto') {
+                folderSet.add(q.theme);
+              }
+            });
+          }
+
+          // 2. Fetch user's folder colors
+          const { data: userData } = await supabase
+            .from('users')
+            .select('folder_colors, folderColors')
+            .eq('id', uid)
+            .maybeSingle();
+
+          const colorsObj = userData?.folder_colors || userData?.folderColors;
+          if (colorsObj && typeof colorsObj === 'object') {
+            Object.keys(colorsObj).forEach(k => {
+              if (k && k !== 'Geral' && k !== 'Sem assunto') folderSet.add(k);
+            });
+          }
+
+          setDynamicFolders(Array.from(folderSet).filter(Boolean));
+        } catch (err) {
+          console.warn("Could not load dynamic folders for modal:", err);
+        }
+      })();
+    }
+  }, [isOpen, auth?.currentUser]);
 
   // Always ensure all bank questions are fetched when the modal opens
   useEffect(() => {
@@ -41,10 +100,19 @@ export function CreateQuizModal({
             if (!error && data && data.length > 0) {
               const list = data.map((d: any) => ({
                 id: d.id,
-                ...d,
-                mainTag: d.main_tag || d.mainTag,
-                subtags: d.subtags || (d.subtag ? [d.subtag] : []),
-                correctAnswer: d.correct_answer !== undefined ? d.correct_answer : d.correctAnswer
+                text: d.text,
+                options: d.options || [],
+                correctAnswer: d.correct_answer !== undefined ? d.correct_answer : (d.correctAnswer || d.answer || ''),
+                explanation: d.explanation || '',
+                images: d.images || [],
+                mainTag: (d.main_tag || d.discipline || d.category || 'Geral').trim(),
+                subtags: Array.isArray(d.subtags) && d.subtags.length > 0
+                  ? d.subtags
+                  : (Array.isArray(d.tags) && d.tags.length > 0 
+                    ? d.tags 
+                    : (d.subtag ? [d.subtag] : (d.theme ? [d.theme] : (d.subject ? [d.subject] : (d.subject_topic ? [d.subject_topic] : []))))),
+                institution: (d.institution || '').trim(),
+                year: d.year !== undefined && d.year !== null ? String(d.year).trim() : ''
               }));
               setLoadedQuestions(list);
               setIsLoadingQuestions(false);
@@ -79,22 +147,56 @@ export function CreateQuizModal({
 
   if (!isOpen) return null;
 
-  const poolOfQuestions = loadedQuestions.length > 0 ? loadedQuestions : (questions || []);
+  const rawPool = loadedQuestions.length > 0 ? loadedQuestions : (questions || []);
+
+  const poolOfQuestions = rawPool.map((q: any) => {
+    const mainTag = (q.mainTag || q.main_tag || q.discipline || q.category || 'Geral').trim();
+    let rawSubtags: string[] = [];
+    if (Array.isArray(q.subtags) && q.subtags.length > 0) {
+      rawSubtags = q.subtags;
+    } else if (Array.isArray(q.tags) && q.tags.length > 0) {
+      rawSubtags = q.tags;
+    } else if (typeof q.subtags === 'string' && q.subtags.trim()) {
+      rawSubtags = [q.subtags.trim()];
+    } else if (q.subtag && typeof q.subtag === 'string' && q.subtag.trim()) {
+      rawSubtags = [q.subtag.trim()];
+    } else if (q.theme && typeof q.theme === 'string' && q.theme.trim()) {
+      rawSubtags = [q.theme.trim()];
+    } else if (q.subject && typeof q.subject === 'string' && q.subject.trim()) {
+      rawSubtags = [q.subject.trim()];
+    } else if (q.subject_topic && typeof q.subject_topic === 'string' && q.subject_topic.trim()) {
+      rawSubtags = [q.subject_topic.trim()];
+    }
+
+    return {
+      ...q,
+      mainTag: mainTag || 'Geral',
+      subtags: rawSubtags.map(s => String(s).trim()).filter(Boolean),
+      institution: (q.institution || '').trim(),
+      year: q.year !== undefined && q.year !== null ? String(q.year).trim() : ''
+    };
+  });
+
+  const basePredefinedTags = [
+    'Clínica Médica',
+    'Cirurgia Geral',
+    'Pediatria',
+    'Ginecologia',
+    'Obstetrícia',
+    'Medicina de Família e Comunidade',
+    'Outros'
+  ];
 
   // Compute all available tags dynamically from all pool questions + props
   const computedMainTags = Array.from(new Set([
+    ...basePredefinedTags,
     ...(uniqueMainTags || []),
     ...poolOfQuestions.map((q: any) => q.mainTag)
-  ])).filter((t): t is string => typeof t === 'string' && t.trim() !== '').sort();
+  ])).filter((t): t is string => typeof t === 'string' && t.trim() !== '' && t !== 'Sem assunto').sort();
 
   const computedSubtags = Array.from(new Set([
     ...(uniqueSubtags || []),
-    ...poolOfQuestions.flatMap((q: any) => {
-      if (Array.isArray(q.subtags)) return q.subtags;
-      if (typeof q.subtags === 'string') return [q.subtags];
-      if (q.subtag) return [q.subtag];
-      return [];
-    })
+    ...poolOfQuestions.flatMap((q: any) => q.subtags || [])
   ])).filter((t): t is string => typeof t === 'string' && t.trim() !== '').sort();
 
   const computedInstitutions = Array.from(new Set([
@@ -108,18 +210,30 @@ export function CreateQuizModal({
   ])).filter((t): t is string => typeof t === 'string' && t.trim() !== '').sort((a, b) => Number(b) - Number(a));
 
   const filteredQuestions = poolOfQuestions.filter((q: any) => {
-    if (modalFilters.mainTags.length > 0 && !modalFilters.mainTags.includes(q.mainTag)) return false;
-    
-    if (modalFilters.subtags.length > 0) {
-      const qSubtags = Array.isArray(q.subtags) ? q.subtags : 
-                       (typeof q.subtags === 'string' ? [q.subtags] : 
-                       (q.subtag ? [q.subtag] : []));
-      const match = qSubtags.some((s: string) => modalFilters.subtags.includes(s));
+    if (modalFilters.mainTags.length > 0) {
+      const qTag = (q.mainTag || '').toLowerCase();
+      const match = modalFilters.mainTags.some((t: string) => t.toLowerCase() === qTag);
       if (!match) return false;
     }
     
-    if (modalFilters.institutions.length > 0 && !modalFilters.institutions.includes(q.institution || '')) return false;
-    if (modalFilters.years.length > 0 && !modalFilters.years.includes(String(q.year || ''))) return false;
+    if (modalFilters.subtags.length > 0) {
+      const qSubtags = (q.subtags || []).map((s: string) => s.toLowerCase());
+      const match = modalFilters.subtags.some((s: string) => qSubtags.includes(s.toLowerCase()));
+      if (!match) return false;
+    }
+    
+    if (modalFilters.institutions.length > 0) {
+      const qInst = (q.institution || '').toLowerCase();
+      const match = modalFilters.institutions.some((i: string) => i.toLowerCase() === qInst);
+      if (!match) return false;
+    }
+
+    if (modalFilters.years.length > 0) {
+      const qYear = String(q.year || '').trim();
+      const match = modalFilters.years.includes(qYear);
+      if (!match) return false;
+    }
+
     return true;
   });
 
@@ -127,6 +241,13 @@ export function CreateQuizModal({
                            modalFilters.subtags.length > 0 || 
                            modalFilters.institutions.length > 0 || 
                            modalFilters.years.length > 0;
+
+  // Combine all folders from props, dynamic state, and userFolders
+  const allAvailableFolders = Array.from(new Set([
+    ...(Array.isArray(folders) ? folders.map((f: any) => typeof f === 'string' ? f : f.name || f.id) : []),
+    ...(Array.isArray(userFolders) ? userFolders : (typeof userFolders === 'object' && userFolders !== null ? Object.keys(userFolders) : [])),
+    ...dynamicFolders
+  ])).filter((f): f is string => typeof f === 'string' && f.trim() !== '' && f !== 'Sem assunto' && f !== 'Geral').sort();
 
   const handleCreate = async () => {
     setFormError(null);
@@ -194,14 +315,33 @@ export function CreateQuizModal({
         qData.subtags = modalFilters.subtags;
       }
 
+      const assignedTag = finalFolder || qData.mainTag || 'Sem assunto';
+      const newQuizObject: any = {
+        id: uniqueId,
+        userId: auth.currentUser.uid,
+        title: qData.title,
+        description: '',
+        subject: assignedTag,
+        tag: assignedTag,
+        mainTag: assignedTag,
+        subtags: qData.subtags || [],
+        questions: quizQuestions,
+        isPublic: false,
+        authorName: auth.currentUser.displayName || 'Estudante',
+        authorPhoto: auth.currentUser.photoURL || '',
+        authorTitle: 'Estudante',
+        knowledgeBase: [],
+        createdAt: qData.createdAt
+      };
+
       // 1. Insert into Supabase
       try {
         await supabase.from('quizzes').insert({
           id: toValidUUID(uniqueId),
           user_id: auth.currentUser.uid,
           title: qData.title,
-          discipline: qData.mainTag || finalFolder || 'Geral',
-          theme: finalFolder || qData.mainTag || 'Geral',
+          discipline: assignedTag,
+          theme: assignedTag,
           tags: qData.subtags || [],
           questions: quizQuestions,
           is_public: false,
@@ -213,8 +353,6 @@ export function CreateQuizModal({
         console.warn("Supabase insert quiz error:", supaErr);
       }
 
-      
-      
       if (finalFolder) {
         try {
           const { data: supaUser } = await supabase.from('users').select('folder_colors').eq('id', auth.currentUser.uid).maybeSingle();
@@ -235,11 +373,13 @@ export function CreateQuizModal({
       setModalFilters({ mainTags: [], subtags: [], institutions: [], years: [] });
       onClose();
       
-      // Dispatch event to inform other components and trigger top/bottom toast notification
+      // Dispatch event to inform other components with the full quiz object for instant 0ms UI update
       window.dispatchEvent(new CustomEvent('quiz_created', {
         detail: {
           title: createdTitle,
-          count: createdCount
+          count: createdCount,
+          quiz: newQuizObject,
+          folder: finalFolder
         }
       }));
     } catch (e: any) {
@@ -294,14 +434,21 @@ export function CreateQuizModal({
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Pasta (Opcional)</label>
+                <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center justify-between">
+                  <span>Pasta (Opcional)</span>
+                  {allAvailableFolders.length > 0 && (
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {allAvailableFolders.length} pasta(s) existente(s)
+                    </span>
+                  )}
+                </label>
                 <select 
                   value={selectedFolderOption}
                   onChange={e => setSelectedFolderOption(e.target.value)}
-                  className="w-full bg-white border border-slate-200 rounded-lg p-2.5 outline-none font-medium text-sm focus:border-indigo-500"
+                  className="w-full bg-white border border-slate-200 rounded-lg p-2.5 outline-none font-medium text-sm focus:border-indigo-500 text-slate-800"
                 >
-                  <option value="">Sem Pasta</option>
-                  {Object.keys(userFolders || {}).map(folder => (
+                  <option value="">Sem Pasta (Raiz)</option>
+                  {allAvailableFolders.map(folder => (
                     <option key={folder} value={folder}>{folder}</option>
                   ))}
                   <option value="__NEW_FOLDER__">+ Criar Nova Pasta...</option>
@@ -378,7 +525,7 @@ export function CreateQuizModal({
                   </div>
                   <div className="max-h-40 overflow-y-auto bg-white border border-slate-200 rounded-lg p-2 space-y-1">
                     {computedMainTags.filter((t: string) => t.toLowerCase().includes(searchMainTags.toLowerCase())).map((tag: string, i: number) => {
-                      const countInPool = poolOfQuestions.filter((q: any) => q.mainTag === tag).length;
+                      const countInPool = poolOfQuestions.filter((q: any) => (q.mainTag || '').toLowerCase() === tag.toLowerCase()).length;
                       return (
                         <label key={i} className="flex items-center justify-between text-sm font-medium text-slate-700 cursor-pointer hover:bg-slate-50 p-1.5 rounded transition">
                           <span className="flex items-center gap-2 truncate">
@@ -423,10 +570,8 @@ export function CreateQuizModal({
                   <div className="max-h-40 overflow-y-auto bg-white border border-slate-200 rounded-lg p-2 space-y-1">
                     {computedSubtags.filter((t: string) => t.toLowerCase().includes(searchSubtags.toLowerCase())).map((tag: string, i: number) => {
                       const countInPool = poolOfQuestions.filter((q: any) => {
-                        const qSubtags = Array.isArray(q.subtags) ? q.subtags : 
-                                         (typeof q.subtags === 'string' ? [q.subtags] : 
-                                         (q.subtag ? [q.subtag] : []));
-                        return qSubtags.includes(tag);
+                        const qSubtags = (q.subtags || []).map((s: string) => s.toLowerCase());
+                        return qSubtags.includes(tag.toLowerCase());
                       }).length;
                       return (
                         <label key={i} className="flex items-center justify-between text-sm font-medium text-slate-700 cursor-pointer hover:bg-slate-50 p-1.5 rounded transition">

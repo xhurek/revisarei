@@ -491,8 +491,8 @@ export function CommunityView({ onSelectQuiz, onSelectFlashcardDeck }: Community
     if (filterType === 'quizzes' && item.itemType !== 'quiz') return false;
     if (filterType === 'flashcards' && item.itemType !== 'flashcard') return false;
 
-    if (filterMainTag && item.category !== filterMainTag) return false;
-    if (filterSubtag && !item.subtags.includes(filterSubtag)) return false;
+    if (filterMainTag && (item.category || '').toLowerCase().trim() !== filterMainTag.toLowerCase().trim()) return false;
+    if (filterSubtag && !(item.subtags || []).some(st => (st || '').toLowerCase().trim() === filterSubtag.toLowerCase().trim())) return false;
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();

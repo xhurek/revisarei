@@ -87,15 +87,23 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
             const list = data.map((d: any) => ({
                  id: d.id,
                  text: d.text,
-                 category: d.category,
-                 subject: d.subject,
-                 subject_topic: d.subject_topic,
-                 institution: d.institution,
-                 year: d.year,
-                 type: d.type,
-                 options: d.options,
-                 answer: d.answer,
-                 explanation: d.explanation
+                 category: d.category || d.main_tag || d.discipline || 'Geral',
+                 mainTag: (d.main_tag || d.discipline || d.category || 'Geral').trim(),
+                 subject: d.subject || d.subtag || d.theme || '',
+                 subject_topic: d.subject_topic || '',
+                 subtag: (d.subtag || d.theme || d.subject || '').trim(),
+                 subtags: Array.isArray(d.subtags) && d.subtags.length > 0
+                   ? d.subtags
+                   : (Array.isArray(d.tags) && d.tags.length > 0
+                     ? d.tags
+                     : (d.subtag ? [d.subtag] : (d.theme ? [d.theme] : (d.subject ? [d.subject] : (d.subject_topic ? [d.subject_topic] : []))))),
+                 institution: (d.institution || '').trim(),
+                 year: d.year !== undefined && d.year !== null ? String(d.year).trim() : '',
+                 type: d.type || 'multiple_choice',
+                 options: d.options || [],
+                 answer: d.answer || d.correct_answer || '',
+                 correctAnswer: d.correct_answer !== undefined ? d.correct_answer : (d.correctAnswer || d.answer || ''),
+                 explanation: d.explanation || ''
             }));
             setBankQuestions(list);
             try { sessionStorage.setItem('cached_full_question_bank_v2', JSON.stringify(list)); } catch {}
@@ -239,11 +247,28 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
   useEffect(() => {
     fetchQuizzes();
 
-    const handleQuizCreated = () => {
-      if (auth.currentUser) {
-        delete memoryCachedQuizzes[auth.currentUser.uid];
+    const handleQuizCreated = (e: any) => {
+      const createdQuiz = e?.detail?.quiz;
+      if (createdQuiz) {
+        setQuizzes(prev => {
+          const updated = [createdQuiz, ...prev.filter(q => q.id !== createdQuiz.id)];
+          if (auth.currentUser) {
+            memoryCachedQuizzes[auth.currentUser.uid] = updated;
+          }
+          return updated;
+        });
+
+        // If a folder was defined, automatically navigate to that folder so the user sees the notebook immediately
+        const targetFolder = createdQuiz.mainTag || createdQuiz.tag;
+        if (targetFolder && targetFolder !== 'Sem assunto' && targetFolder !== 'Geral') {
+          setSelectedFolder(targetFolder);
+        }
+      } else {
+        if (auth.currentUser) {
+          delete memoryCachedQuizzes[auth.currentUser.uid];
+        }
+        fetchQuizzes();
       }
-      fetchQuizzes();
     };
     window.addEventListener('quiz_created', handleQuizCreated);
     return () => window.removeEventListener('quiz_created', handleQuizCreated);
@@ -665,8 +690,16 @@ export function QuizzesView({ onQuizStart, onQuizGenerated, isAdmin = false }: Q
         onClose={() => setIsCreateQuizModalOpen(false)}
         questions={bankQuestions}
         userFolders={folderColors}
-        uniqueMainTags={Array.from(new Set(bankQuestions.map(q => q.mainTag).filter(Boolean))).sort()}
-        uniqueSubtags={Array.from(new Set(bankQuestions.flatMap(q => q.subtags || (q.subtag ? [q.subtag] : [])).filter(Boolean))).sort()}
+        folders={Array.from(new Set(quizzes.map(q => q.mainTag || q.tag).filter((t): t is string => typeof t === 'string' && t.trim() !== '' && t !== 'Sem assunto' && t !== 'Geral')))}
+        initialFolder={selectedFolder || ''}
+        uniqueMainTags={Array.from(new Set([
+          ...availableTags.map(t => t.name),
+          ...bankQuestions.map(q => q.mainTag)
+        ])).filter(Boolean).sort()}
+        uniqueSubtags={Array.from(new Set([
+          ...availableTags.flatMap(t => t.subtags),
+          ...bankQuestions.flatMap(q => q.subtags || (q.subtag ? [q.subtag] : []))
+        ])).filter(Boolean).sort()}
         uniqueInstitutions={Array.from(new Set(bankQuestions.map(q => q.institution).filter(Boolean))).sort()}
         uniqueYears={Array.from(new Set(bankQuestions.map(q => q.year).filter(Boolean))).sort()}
         auth={auth}

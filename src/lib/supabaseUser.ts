@@ -112,6 +112,38 @@ export async function updateUserProgressInSupabase(
       // ignore
     }
 
+    // Se o localStorage não possuir os dados completos, busca direto do banco (users e user_stats) para não sobrescrever
+    if (!existingStats || Object.keys(existingStats).length === 0 || existingStats.questions_answered === undefined) {
+      try {
+        const { data: dbUser } = await supabase.from('users').select('*').eq('id', uid).maybeSingle();
+        if (dbUser) {
+          existingStats = {
+            questions_answered: dbUser.questions_answered || 0,
+            progression_questions: dbUser.progression_questions || 0,
+            questions_correct: dbUser.questions_correct || 0,
+            flashcards_reviewed: dbUser.flashcards_reviewed || 0,
+            daily_question_count: dbUser.daily_question_count || 0,
+            weekly_question_count: dbUser.weekly_question_count || 0,
+            current_week: dbUser.current_week || null,
+            last_activity_date: dbUser.last_activity_date || null,
+            streak: dbUser.streak_days || dbUser.streak || 0,
+            daily_goals_met: dbUser.daily_goals_met || 0,
+            weekly_goals_met: dbUser.weekly_goals_met || 0,
+            responses_total: dbUser.responses_total || 0,
+            saves_total: dbUser.saves_total || 0,
+            category_stats: dbUser.category_stats || {}
+          };
+        } else {
+          const { data: dbStats } = await supabase.from('user_stats').select('*').eq('user_id', uid).maybeSingle();
+          if (dbStats) {
+            existingStats = dbStats;
+          }
+        }
+      } catch (dbErr) {
+        console.warn("Aviso ao carregar stats prévios do banco:", dbErr);
+      }
+    }
+
     if (progress.rawStats) {
       const prevAnswered = existingStats.questions_answered || 0;
       const prevProgression = existingStats.progression_questions || 0;
@@ -364,5 +396,20 @@ export async function getUserStatsFromSupabase(uid: string): Promise<any> {
   } catch (err) {
     console.warn("Exceção ao buscar user stats do Supabase:", err);
     return null;
+  }
+}
+
+/**
+ * Incrementa de forma atômica e segura a contagem de flashcards revisados pelo usuário.
+ */
+export async function incrementFlashcardsReviewedInSupabase(uid: string, count: number = 1): Promise<void> {
+  try {
+    await updateUserProgressInSupabase(uid, {
+      rawStats: {
+        flashcardsReviewed: count
+      }
+    });
+  } catch (err) {
+    console.warn("Erro ao incrementar flashcards revisados:", err);
   }
 }

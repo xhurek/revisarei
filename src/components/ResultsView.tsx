@@ -18,6 +18,17 @@ interface ResultsViewProps {
   };
   onDone: () => void;
   onRetry: () => void;
+  onGoToFlashcards?: () => void;
+}
+
+function cleanHtmlSnippet(text: string, maxLen = 350): string {
+  if (!text) return '';
+  return text
+    .replace(/<[^>]*>?/gm, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, maxLen);
 }
 
 export function extractTopicAndSubtopic(m: { question: string; answer: string; tag?: string; subtag?: string; subtags?: string[] }): { topic: string; subtopic: string } {
@@ -28,7 +39,7 @@ export function extractTopicAndSubtopic(m: { question: string; answer: string; t
   let topic = m.tag || '';
   let subtopic = m.subtag || (m.subtags && m.subtags[0]) || '';
 
-  const isGenericTag = !topic || ['Clínica Médica', 'Cirurgia Geral', 'Pediatria', 'Ginecologia', 'Obstetrícia', 'Medicina de Família e Comunidade', 'Outros', 'Assunto Geral', 'Geral'].includes(topic);
+  const isGenericTag = !topic || ['Clínica Médica', 'Cirurgia Geral', 'Pediatria', 'Ginecologia', 'Obstetrícia', 'Medicina de Família e Comunidade', 'Outros', 'Assunto Geral', 'Geral', 'Sem assunto'].includes(topic);
 
   if (isGenericTag) {
     const diseasePatterns = [
@@ -104,9 +115,9 @@ export function extractTopicAndSubtopic(m: { question: string; answer: string; t
   return { topic, subtopic };
 }
 
-export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
-  const [savingCards, setSavingCards] = useState(false);
+export function ResultsView({ results, onDone, onRetry, onGoToFlashcards }: ResultsViewProps) {
   const [saved, setSaved] = useState(false);
+  const [savedCount, setSavedCount] = useState(0);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const [aiTopics, setAiTopics] = useState<Record<number, { topic: string; subtopic: string; flashcardQuestion?: string; flashcardAnswer?: string }>>({});
   const [isAnalyzing, setIsAnalyzing] = useState(results.missed && results.missed.length > 0);
@@ -117,80 +128,149 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
     ? Math.round((scoreCount / totalQuestions) * 100)
     : 0;
 
-  // Asynchronously request precise AI topic analysis for missed questions
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
+  // Geração inteligente de flashcards de memorização ativa com IA para todas as questões erradas
   useEffect(() => {
     if (!results.missed || results.missed.length === 0) return;
 
+    const currentUid = auth.currentUser?.uid;
+    const deckTag = (results.title || results.tag || 'Caderno de Erros').trim();
+
     setIsAnalyzing(true);
-    setSavingCards(true);
 
     apiFetch('/api/analyze-missed-topics', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        items: results.missed.map(m => ({ question: m.question, answer: m.answer }))
+        items: results.missed.map(m => ({ 
+          question: cleanHtmlSnippet(m.question, 600), 
+          answer: cleanHtmlSnippet(m.answer, 300),
+          userAnswer: cleanHtmlSnippet(m.userAnswer, 200),
+          explanation: cleanHtmlSnippet(m.explanation, 400)
+        }))
       })
     })
       .then(async (res) => {
         const data = await parseJsonResponse(res);
-        if (data.analysis && Array.isArray(data.analysis)) {
-          const map: Record<number, { topic: string; subtopic: string; flashcardQuestion?: string; flashcardAnswer?: string }> = {};
-          
-          const generatedCards: Flashcard[] = [];
-          
+        const generatedCards: Flashcard[] = [];
+        const map: Record<number, { topic: string; subtopic: string; flashcardQuestion?: string; flashcardAnswer?: string }> = {};
+
+        if (data.analysis && Array.isArray(data.analysis) && data.analysis.length > 0) {
           data.analysis.forEach((item: any) => {
-            if (item.topic && item.subtopic) {
-              map[item.id] = { 
-                topic: item.topic, 
-                subtopic: item.subtopic,
-                flashcardQuestion: item.flashcardQuestion,
-                flashcardAnswer: item.flashcardAnswer
-              };
+            const m = results.missed[item.id];
+            const topic = item.topic || 'Clínica Médica';
+            const subtopic = item.subtopic || 'Conduta e Diagnóstico';
+            const fcQuestion = item.flashcardQuestion || (m ? `Qual a conduta e diagnóstico principal para este caso de ${subtopic}?` : 'Qual a conduta médica preconizada?');
+            const fcAnswer = item.flashcardAnswer || cleanHtmlSnippet(m?.answer, 200) || 'Conforme diretrizes clínicas.';
+            const fcExplanation = item.explanation || cleanHtmlSnippet(m?.explanation, 400);
 
-              // Auto generate flashcard
-              if (item.flashcardQuestion && item.flashcardAnswer && auth.currentUser) {
-                const m = results.missed[item.id];
-                if (m) {
-                  generatedCards.push({
-                    id: `fc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-                    question: item.flashcardQuestion,
-                    answer: item.flashcardAnswer,
-                    explanation: m.explanation || '',
-                    nextReview: new Date().toISOString(),
-                    interval: 0,
-                    easeFactor: 2.5,
-                    userId: auth.currentUser.uid,
-                    createdAt: new Date().toISOString(),
-                    tag: results.title || item.topic || results.tag || 'Caderno de Erros',
-                    subtag: 'Erros',
-                    subtags: ['Erros']
-                  });
-                }
-              }
-            }
+            map[item.id] = {
+              topic,
+              subtopic,
+              flashcardQuestion: fcQuestion,
+              flashcardAnswer: fcAnswer
+            };
+
+            generatedCards.push({
+              id: `fc_missed_${Date.now()}_${item.id}_${Math.random().toString(36).substring(2, 6)}`,
+              question: fcQuestion,
+              answer: fcAnswer,
+              explanation: fcExplanation || `Revisão do erro em ${topic} (${subtopic}).`,
+              nextReview: new Date().toISOString(),
+              interval: 0,
+              easeFactor: 2.5,
+              userId: currentUid || '',
+              createdAt: new Date().toISOString(),
+              tag: deckTag,
+              subtag: subtopic,
+              subtags: Array.from(new Set([subtopic, topic, 'Erros'])).filter(Boolean)
+            });
           });
-          
-          setAiTopics(map);
+        } else {
+          // Fallback caso a IA não retorne schema esperado
+          results.missed.forEach((m, idx) => {
+            const { topic, subtopic } = extractTopicAndSubtopic(m);
+            const cleanA = cleanHtmlSnippet(m.answer, 200);
+            const cleanExp = cleanHtmlSnippet(m.explanation, 400);
+            const fcQuestion = `Qual o diagnóstico e a conduta recomendada para o quadro de ${subtopic}?`;
+            const fcAnswer = cleanA || 'Conforme gabarito e diretrizes clínicas.';
 
-          if (generatedCards.length > 0 && auth.currentUser) {
-            importFlashcardsBatchToSupabase(auth.currentUser.uid, generatedCards)
-              .then(() => setSaved(true))
-              .catch(err => console.warn("Supabase auto-save flashcards error:", err));
+            map[idx] = { topic, subtopic, flashcardQuestion: fcQuestion, flashcardAnswer: fcAnswer };
+
+            generatedCards.push({
+              id: `fc_missed_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+              question: fcQuestion,
+              answer: fcAnswer,
+              explanation: cleanExp || `Revisão em ${topic} (${subtopic}).`,
+              nextReview: new Date().toISOString(),
+              interval: 0,
+              easeFactor: 2.5,
+              userId: currentUid || '',
+              createdAt: new Date().toISOString(),
+              tag: deckTag,
+              subtag: subtopic,
+              subtags: Array.from(new Set([subtopic, topic, 'Erros'])).filter(Boolean)
+            });
+          });
+        }
+
+        setAiTopics(map);
+
+        if (currentUid && generatedCards.length > 0) {
+          await importFlashcardsBatchToSupabase(currentUid, generatedCards);
+          setSaved(true);
+          setSavedCount(generatedCards.length);
+        }
+      })
+      .catch(async (err) => {
+        console.warn("AI topic analysis fallback:", err);
+        const map: Record<number, { topic: string; subtopic: string; flashcardQuestion?: string; flashcardAnswer?: string }> = {};
+        const fallbackCards: Flashcard[] = [];
+
+        results.missed.forEach((m, idx) => {
+          const { topic, subtopic } = extractTopicAndSubtopic(m);
+          const cleanA = cleanHtmlSnippet(m.answer, 200);
+          const cleanExp = cleanHtmlSnippet(m.explanation, 400);
+          const fcQuestion = `Qual a conduta e princípios diagnósticos para o quadro de ${subtopic}?`;
+          const fcAnswer = cleanA || 'Conforme diretrizes oficiais.';
+
+          map[idx] = { topic, subtopic, flashcardQuestion: fcQuestion, flashcardAnswer: fcAnswer };
+
+          fallbackCards.push({
+            id: `fc_missed_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+            question: fcQuestion,
+            answer: fcAnswer,
+            explanation: cleanExp || `Revisão em ${topic} (${subtopic}).`,
+            nextReview: new Date().toISOString(),
+            interval: 0,
+            easeFactor: 2.5,
+            userId: currentUid || '',
+            createdAt: new Date().toISOString(),
+            tag: deckTag,
+            subtag: subtopic,
+            subtags: Array.from(new Set([subtopic, topic, 'Erros'])).filter(Boolean)
+          });
+        });
+
+        setAiTopics(map);
+
+        if (currentUid && fallbackCards.length > 0) {
+          try {
+            await importFlashcardsBatchToSupabase(currentUid, fallbackCards);
+            setSaved(true);
+            setSavedCount(fallbackCards.length);
+          } catch (saveErr) {
+            console.warn("Error saving fallback flashcards:", saveErr);
           }
         }
       })
-      .catch((err) => {
-        console.warn("AI topic analysis fallback to heuristic:", err);
-      })
       .finally(() => {
         setIsAnalyzing(false);
-        setSavingCards(false);
       });
-  }, [results.missed]);
+  }, [results.missed, results.title, results.tag]);
 
   // Group missed topics and subtags for study recommendations
   const topicsToReviewMap = useMemo(() => {
@@ -340,39 +420,60 @@ export function ResultsView({ results, onDone, onRetry }: ResultsViewProps) {
 
       {/* Missed Questions / Flashcards Action */}
       {results.missed.length > 0 && (
-        <section className="bg-indigo-600 text-white p-8 rounded-2xl space-y-8 shadow-lg shadow-indigo-200 relative overflow-hidden">
+        <section className="bg-indigo-600 text-white p-6 sm:p-8 rounded-2xl space-y-6 shadow-lg shadow-indigo-200 relative overflow-hidden">
           <div className="absolute -right-4 -top-8 w-40 h-40 bg-white/5 rounded-full blur-2xl"></div>
           <div className="flex items-start justify-between relative z-10">
             <div className="space-y-1">
+              <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-white/10 rounded-lg text-xs font-bold text-indigo-100 border border-white/10 mb-1">
+                <Brain className="w-3.5 h-3.5 text-indigo-200" />
+                <span>Memorização Ativa</span>
+              </div>
               <h3 className="text-xl font-bold">Consolidação do Erro</h3>
               <p className="text-sm text-indigo-100 opacity-90">
-                Transformando seus erros em {results.missed.length} flashcards de memorização ativa.
+                Transformando seus erros em {results.missed.length} flashcards de fixação imediata.
               </p>
             </div>
-            <Brain className="w-8 h-8 text-indigo-200" />
           </div>
 
           <div
-            className={cn(
-              "w-full py-4 rounded-xl font-bold flex items-center justify-center gap-2 relative z-10",
-              saved ? "bg-green-500 text-white" : "bg-white/10 text-indigo-50 border border-white/20"
-            )}
+            className="w-full p-4 rounded-xl bg-white/10 border border-white/20 relative z-10 flex flex-col sm:flex-row items-center justify-between gap-4"
           >
-            {saved ? (
-              <>
-                <Check className="w-5 h-5" />
-                Flashcards Adicionados!
-              </>
-            ) : isAnalyzing || savingCards ? (
-              <>
-                <motion.div
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                  className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
-                />
-                Analisando erros e gerando flashcards...
-              </>
-            ) : null}
+            <div className="flex items-center gap-3 w-full sm:w-auto">
+              <div className={cn(
+                "w-10 h-10 rounded-xl flex items-center justify-center font-bold shrink-0 transition-colors shadow-sm",
+                saved ? "bg-green-500 text-white" : "bg-white/20 text-white"
+              )}>
+                {saved ? (
+                  <Check className="w-6 h-6" />
+                ) : (
+                  <motion.div
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                    className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full"
+                  />
+                )}
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-white">
+                  {saved ? `${savedCount || results.missed.length} Flashcard(s) Adicionados com Sucesso!` : 'Criando flashcards dos seus erros...'}
+                </h4>
+                <p className="text-xs text-indigo-100 font-medium">
+                  {isAnalyzing 
+                    ? "✨ Refinando e otimizando perguntas com Inteligência Artificial..." 
+                    : "Salvos no seu deck prontos para repetição espaçada."}
+                </p>
+              </div>
+            </div>
+
+            {onGoToFlashcards && (
+              <button
+                onClick={onGoToFlashcards}
+                className="w-full sm:w-auto px-5 py-2.5 bg-white text-indigo-700 hover:bg-indigo-50 rounded-xl font-bold text-xs sm:text-sm shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer shrink-0"
+              >
+                <Brain className="w-4 h-4 text-indigo-600" />
+                Praticar Flashcards
+              </button>
+            )}
           </div>
         </section>
       )}

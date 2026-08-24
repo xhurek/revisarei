@@ -92,48 +92,61 @@ export default function App() {
       }
     }
   };
-  const [toastNotification, setToastNotification] = useState<{
+  const [toastNotifications, setToastNotifications] = useState<{
     id: string;
     title: string;
     description: string;
     icon?: 'trophy' | 'book' | 'check' | 'bell' | 'sparkles' | 'info';
-  } | null>(null);
+  }[]>([]);
+
+  const removeToast = (id: string) => {
+    setToastNotifications(prev => prev.filter(t => t.id !== id));
+  };
 
   useEffect(() => {
-    let timer: any = null;
-
     const handleToast = (e: any) => {
       const detail = e.detail || {};
-      setToastNotification({
-        id: detail.id || Math.random().toString(),
+      const id = detail.id || Math.random().toString(36).substring(2, 9);
+      const duration = detail.duration || 3500;
+
+      const newToast = {
+        id,
         title: detail.title || '',
         description: detail.description || '',
         icon: detail.icon || 'check'
+      };
+
+      setToastNotifications(prev => {
+        const filtered = prev.filter(t => t.id !== id);
+        return [...filtered, newToast].slice(-3);
       });
 
-      if (timer) clearTimeout(timer);
-      const duration = detail.duration || 3000;
-      timer = setTimeout(() => {
-        setToastNotification(null);
+      setTimeout(() => {
+        removeToast(id);
       }, duration);
     };
 
     const handleQuizCreated = (e: any) => {
       const detail = e.detail || {};
+      const id = Math.random().toString(36).substring(2, 9);
       const title = detail.title ? `Caderno "${detail.title}" criado!` : 'Caderno criado com sucesso!';
       const description = detail.count ? `${detail.count} questões prontas para resolver` : 'Pronto para estudar';
       
-      setToastNotification({
-        id: Math.random().toString(),
+      const newToast = {
+        id,
         title,
         description,
-        icon: 'book'
+        icon: 'book' as const
+      };
+
+      setToastNotifications(prev => {
+        const filtered = prev.filter(t => t.id !== id);
+        return [...filtered, newToast].slice(-3);
       });
 
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        setToastNotification(null);
-      }, 3000);
+      setTimeout(() => {
+        removeToast(id);
+      }, 3500);
     };
 
     window.addEventListener('app_toast', handleToast);
@@ -141,7 +154,6 @@ export default function App() {
     return () => {
       window.removeEventListener('app_toast', handleToast);
       window.removeEventListener('quiz_created', handleQuizCreated);
-      if (timer) clearTimeout(timer);
     };
   }, []);
 
@@ -701,6 +713,7 @@ export default function App() {
                 results={lastResults}
                 onDone={() => setCurrentView(View.LANDING)}
                 onRetry={() => setCurrentView(View.QUIZ)}
+                onGoToFlashcards={() => setCurrentView(View.FLASHCARDS)}
               />
             </motion.div>
           )}
@@ -778,38 +791,47 @@ export default function App() {
         onTriggerInstall={handleTriggerInstall}
       />
 
-      {/* Floating Animated Toast Notification */}
-      <div className="fixed bottom-6 left-0 right-0 z-[9999] flex justify-center pointer-events-none px-4">
-        <AnimatePresence>
-          {toastNotification && (
+      {/* Floating Animated Toast Notification Stack */}
+      <div className="fixed bottom-6 left-0 right-0 z-[9999] flex flex-col-reverse items-center gap-2.5 pointer-events-none px-4">
+        <AnimatePresence mode="popLayout">
+          {toastNotifications.map(toast => (
             <motion.div 
-              key={toastNotification.id}
-              initial={{ opacity: 0, y: 40, scale: 0.95 }} 
+              key={toast.id}
+              layout
+              initial={{ opacity: 0, y: 25, scale: 0.94 }} 
               animate={{ opacity: 1, y: 0, scale: 1 }} 
-              exit={{ opacity: 0, y: 40, scale: 0.95 }}
-              transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-              className="w-full max-w-md bg-emerald-50 border border-emerald-200 p-4 rounded-2xl shadow-xl shadow-emerald-950/10 flex items-center gap-4 pointer-events-auto"
+              exit={{ opacity: 0, scale: 0.94, y: 15 }}
+              transition={{ 
+                type: "spring", 
+                stiffness: 420, 
+                damping: 32,
+                opacity: { duration: 0.2 }
+              }}
+              className="w-full max-w-md bg-white/95 backdrop-blur-md border border-emerald-200/80 p-3.5 sm:p-4 rounded-2xl shadow-xl shadow-slate-900/10 flex items-center gap-3.5 pointer-events-auto"
             >
-              <div className="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center shrink-0 border border-emerald-200">
-                {toastNotification.icon === 'trophy' && <Trophy className="w-5 h-5 text-emerald-700" />}
-                {toastNotification.icon === 'book' && <BookOpen className="w-5 h-5 text-emerald-700" />}
-                {toastNotification.icon === 'bell' && <Bell className="w-5 h-5 text-emerald-700" />}
-                {toastNotification.icon === 'sparkles' && <Sparkles className="w-5 h-5 text-emerald-700" />}
-                {toastNotification.icon === 'info' && <Info className="w-5 h-5 text-emerald-700" />}
-                {(!toastNotification.icon || toastNotification.icon === 'check') && <CheckCircle2 className="w-5 h-5 text-emerald-700" />}
+              <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center shrink-0 border border-emerald-100">
+                {toast.icon === 'trophy' && <Trophy className="w-5 h-5 text-emerald-600" />}
+                {toast.icon === 'book' && <BookOpen className="w-5 h-5 text-emerald-600" />}
+                {toast.icon === 'bell' && <Bell className="w-5 h-5 text-emerald-600" />}
+                {toast.icon === 'sparkles' && <Sparkles className="w-5 h-5 text-emerald-600" />}
+                {toast.icon === 'info' && <Info className="w-5 h-5 text-emerald-600" />}
+                {(!toast.icon || toast.icon === 'check') && <CheckCircle2 className="w-5 h-5 text-emerald-600" />}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="font-bold text-emerald-950 text-sm truncate">{toastNotification.title}</p>
-                <p className="text-[11px] text-emerald-700 font-bold uppercase tracking-wider truncate">{toastNotification.description}</p>
+                <p className="font-bold text-slate-900 text-sm truncate">{toast.title}</p>
+                {toast.description && (
+                  <p className="text-[11px] text-slate-500 font-medium tracking-wide truncate mt-0.5">{toast.description}</p>
+                )}
               </div>
               <button 
-                onClick={() => setToastNotification(null)} 
-                className="p-1.5 hover:bg-emerald-100 text-emerald-600 hover:text-emerald-800 rounded-lg transition"
+                onClick={() => removeToast(toast.id)} 
+                className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-700 rounded-lg transition shrink-0 cursor-pointer"
+                title="Fechar notificação"
               >
                 <X className="w-4 h-4" />
               </button>
             </motion.div>
-          )}
+          ))}
         </AnimatePresence>
       </div>
     </div>

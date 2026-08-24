@@ -57,17 +57,40 @@ export function Dashboard({ onNavigate, userData, titlesList }: DashboardProps) 
     if (!auth.currentUser) return;
     setLoading(true);
     try {
-      const statusData = await getUserStatsFromSupabase(auth.currentUser.uid);
+      const uid = auth.currentUser.uid;
+      const statusData = await getUserStatsFromSupabase(uid);
       if (statusData) {
         const catStats = statusData.categoryStats || {};
         const hasCategoryStats = Object.keys(catStats).length > 0;
         const totalCorrectFromCategories = Object.values(catStats).reduce((acc: number, curr: any) => acc + (curr.correct || 0), 0) as number;
 
+        let reviewedTotal = statusData.flashcardsReviewed || 0;
+
+        // Verificação complementar: se a contagem estiver em 0 ou precisar de sincronização, verifica flashcards já revisados (interval > 0 ou alterados)
+        try {
+          const { data: deckRows } = await supabase.from('flashcards').select('cards').eq('user_id', uid);
+          if (deckRows && deckRows.length > 0) {
+            let activeCardsReviewed = 0;
+            deckRows.forEach((row: any) => {
+              if (Array.isArray(row.cards)) {
+                row.cards.forEach((c: any) => {
+                  if (c && (c.interval > 0 || c.easeFactor !== 2.5 || (c.nextReview && new Date(c.nextReview).getTime() > Date.now()))) {
+                    activeCardsReviewed++;
+                  }
+                });
+              }
+            });
+            reviewedTotal = Math.max(reviewedTotal, activeCardsReviewed);
+          }
+        } catch (cardErr) {
+          console.warn("Aviso ao ler flashcards para estatística:", cardErr);
+        }
+
         setStats({
           answered: statusData.questionsAnswered || 0,
           progression: statusData.progressionQuestions || 0,
           correct: hasCategoryStats ? totalCorrectFromCategories : (isNaN(statusData.questionsCorrect) ? 0 : statusData.questionsCorrect),
-          reviewed: statusData.flashcardsReviewed || 0,
+          reviewed: reviewedTotal,
           weekly: statusData.weeklyQuestionCount || 0,
           streak: statusData.streak || userData?.streak || 1,
           dailyGoalsMet: statusData.dailyGoalsMet || 0,
